@@ -21,25 +21,34 @@ public sealed class CaptureSession
     public static CaptureSession? Current { get; private set; }
 
     private readonly AppSettings _s;
-    private readonly List<Int32Rect> _windows; // visible windows, physical virtual-screen pixels
-    private readonly List<(CaptureOverlayWindow Overlay, PixelBuffer Pixels)> _overlays = new();
+    private readonly List<WindowEntry> _entries; // visible windows when the screen was frozen, front first
+    private readonly List<Int32Rect> _windows;   // their bounds (for "click a window"), physical virtual-screen pixels
+    private readonly List<(CaptureOverlayWindow Overlay, BitmapSource Shot)> _overlays = new(); // one frozen screen per monitor
     private bool _finished;
 
     public ExportSize Size { get; private set; }
+    /// <summary>HD is on for this capture: the selection is really re-rendered at 2–4× instead of taken from the screen.</summary>
+    public bool Hd { get; private set; }
+    /// <summary>The "HD" switch can be offered (the virtual screen is installed and switched on in Settings).</summary>
+    public bool HdAvailable { get; }
+    public int HdScale => Math.Clamp(_s.HdScale, 2, 4);
     public event Action? SizeChanged;
 
-    private CaptureSession(AppSettings s, List<Int32Rect> windows)
+    private CaptureSession(AppSettings s, List<WindowEntry> entries, bool? hd = null)
     {
         _s = s;
-        _windows = windows;
+        _entries = entries;
+        _windows = s.DetectWindows ? entries.Select(e => e.Bounds).ToList() : new List<Int32Rect>();
         Size = s.DefaultExportSize;
+        HdAvailable = hd ?? App.Instance?.HdAvailable == true;
+        Hd = HdAvailable && s.HdCapture;
     }
 
-    internal static (CaptureSession session, CaptureOverlayWindow overlay) CreateForTest(AppSettings s, PixelBuffer screen)
+    internal static (CaptureSession session, CaptureOverlayWindow overlay) CreateForTest(AppSettings s, PixelBuffer screen, bool hd = false)
     {
         var mon = new MonitorInfo(IntPtr.Zero, new Int32Rect(0, 0, screen.Width, screen.Height), new Int32Rect(0, 0, screen.Width, screen.Height), 1.0, true);
-        var session = new CaptureSession(s, new List<Int32Rect>());
-        var overlay = session.AddOverlay(mon, screen, activate: false, show: false);
+        var session = new CaptureSession(s, new List<WindowEntry>(), hd);
+        var overlay = session.AddOverlay(mon, screen.ToBitmap(), activate: false, show: false);
         return (session, overlay);
     }
 
@@ -54,10 +63,10 @@ public sealed class CaptureSession
         {
             var area = new Int32Rect(-32000, -32000, 32, 32);
             var mon = new MonitorInfo(IntPtr.Zero, area, area, 1.0, false);
-            var session = new CaptureSession(s, new List<Int32Rect>());
+            var session = new CaptureSession(s, new List<WindowEntry>());
             var pb = new PixelBuffer(32, 32);
             pb.ForceOpaque();
-            var o = session.AddOverlay(mon, pb, activate: false, show: true);
+            var o = session.AddOverlay(mon, pb.ToBitmap(), activate: false, show: true);
             o.ContentRendered += (_, _) => o.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() =>
             {
                 session._finished = true;
@@ -77,13 +86,12 @@ public sealed class CaptureSession
             if (monitors.Count == 0) return;
             Native.GetCursorPos(out var cursor);
             var first = monitors.FirstOrDefault(m => m.Contains(cursor.X, cursor.Y)) ?? monitors[0];
-            var windows = s.DetectWindows ? WindowFinder.VisibleWindows() : new List<Int32Rect>();
-            var session = new CaptureSession(s, windows);
+            var session = new CaptureSession(s, WindowFinder.Snapshot());
             Current = session;
 
             // The monitor you are looking at first - the overlay appears there right away...
-            session.AddOverlay(first, ScreenCapturer.Capture(first.Bounds), activate: true, show: true);
-            Log.Info($"Capture overlay ready in {sw.ElapsedMilliseconds} ms ({monitors.Count} monitors, {windows.Count} windows)");
+            session.AddOverlay(first, ScreenCapturer.CaptureBitmap(first.Bounds), activate: true, show: true);
+            Log.Info($"Capture overlay ready in {sw.ElapsedMilliseconds} ms ({monitors.Count} monitors, {session._entries.Count} windows)");
 
             // ...the other monitors follow a moment later (each overlay only covers its own screen).
             var rest = monitors.Where(m => m != first).ToList();
@@ -96,7 +104,7 @@ public sealed class CaptureSession
                         foreach (var m in rest)
                         {
                             if (session._finished) return;
-                            session.AddOverlay(m, ScreenCapturer.Capture(m.Bounds), activate: false, show: true);
+                            session.AddOverlay(m, ScreenCapturer.CaptureBitmap(m.Bounds), activate: false, show: true);
                         }
                         Log.Info($"All overlays ready in {sw.ElapsedMilliseconds} ms");
                     }
@@ -112,22 +120,32 @@ public sealed class CaptureSession
         }
     }
 
-    private CaptureOverlayWindow AddOverlay(MonitorInfo m, PixelBuffer pixels, bool activate, bool show)
+    private CaptureOverlayWindow AddOverlay(MonitorInfo m, BitmapSource bmp, bool activate, bool show)
     {
-        var bmp = pixels.ToBitmap();
         var windows = _windows
             .Select(w => ImageOps.Intersect(w, m.Bounds))
             .Where(w => w.Width > 0 && w.Height > 0)
             .Select(w => new Int32Rect(w.X - m.Bounds.X, w.Y - m.Bounds.Y, w.Width, w.Height))
             .ToList();
         var o = new CaptureOverlayWindow(this, m, bmp, windows, activate);
-        _overlays.Add((o, pixels));
+        _overlays.Add((o, bmp));
         if (show) o.Show();
         return o;
     }
 
+    /// <summary>Test copies: select the given area on the main monitor and "press Ctrl+C".</summary>
+    internal void CommitForTest(Int32Rect localPx)
+    {
+        if (_finished) return;
+        var o = _overlays.Select(x => x.Overlay).FirstOrDefault(x => x.Monitor.Primary) ?? _overlays.Select(x => x.Overlay).FirstOrDefault();
+        if (o == null) return;
+        o.SelectForTest(localPx);
+        o.Commit(CaptureAction.Copy);
+    }
+
     private void ActivateUnderCursor()
     {
+        if (_finished) return;
         Native.GetCursorPos(out var p);
         var list = _overlays.Select(x => x.Overlay).ToList();
         var o = list.FirstOrDefault(x => x.Monitor.Contains(p.X, p.Y)) ?? list.FirstOrDefault();
@@ -143,6 +161,15 @@ public sealed class CaptureSession
     public void SetSize(ExportSize size)
     {
         Size = size;
+        SizeChanged?.Invoke();
+    }
+
+    public void ToggleHd()
+    {
+        if (!HdAvailable || _finished) return;
+        Hd = !Hd;
+        _s.HdCapture = Hd;
+        _s.Save();
         SizeChanged?.Invoke();
     }
 
@@ -170,13 +197,40 @@ public sealed class CaptureSession
     {
         if (_finished) return;
         _finished = true;
-        var pixels = _overlays.First(x => x.Overlay == source).Pixels;
-        var r = ImageOps.Intersect(localPx, new Int32Rect(0, 0, pixels.Width, pixels.Height));
-        CloseOverlays();
-        Current = null;
-        if (r.Width <= 0 || r.Height <= 0) return;
-        var crop = pixels.Crop(r);
-        Deliver(_s, crop, Size, action, source.Monitor);
+        var shot = _overlays.First(x => x.Overlay == source).Shot;
+        var r = ImageOps.Intersect(localPx, new Int32Rect(0, 0, shot.PixelWidth, shot.PixelHeight));
+        if (r.Width <= 0 || r.Height <= 0)
+        {
+            CloseOverlays();
+            Current = null;
+            return;
+        }
+        var crop = PixelBuffer.FromBitmap(new CroppedBitmap(shot, r)); // only the selection is ever copied out
+        var monitor = source.Monitor;
+
+        if (!Hd)
+        {
+            CloseOverlays();
+            Current = null;
+            Deliver(_s, crop, Size, action, monitor, null);
+            return;
+        }
+
+        // HD: the frozen picture stays on screen while the window is re-rendered off-screen (the window briefly leaves
+        // its place - nobody should have to watch that).
+        int scale = HdCapture.ScaleFor(r.Width, r.Height, HdScale);
+        foreach (var (o, _) in _overlays) o.ShowBusy(o == source ? L.F("Capture.HdBusy", scale) : null);
+        var entries = _entries;
+        Task.Run(() => HdCapture.Render(entries, monitor, r, crop, scale)).ContinueWith(t =>
+        {
+            Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                var result = t.IsCompletedSuccessfully ? t.Result : new HdResult(null, 1, HdFailure.Error, t.Exception?.GetBaseException().Message ?? "");
+                CloseOverlays();
+                Current = null;
+                Deliver(_s, result.Image ?? crop, Size, action, monitor, result);
+            }));
+        });
     }
 
     private void CloseOverlays()
@@ -187,11 +241,14 @@ public sealed class CaptureSession
 
     // ------------------------------------------------------------------ results
 
-    private static async void Deliver(AppSettings s, PixelBuffer shot, ExportSize size, CaptureAction action, MonitorInfo monitor)
+    private static async void Deliver(AppSettings s, PixelBuffer shot, ExportSize size, CaptureAction action, MonitorInfo monitor, HdResult? hd)
     {
         try
         {
             if (s.PlaySound) Sound.Shutter();
+            // what the little badge on the preview says: "HD 4×", or why this one stayed a normal screenshot
+            string? badge = hd == null ? null : hd.Image != null ? $"HD {hd.Scale:0.#}×" : HdCapture.Explain(hd.Failure);
+            bool badgeGood = hd?.Image != null;
 
             if (action == CaptureAction.Edit)
             {
@@ -207,6 +264,7 @@ public sealed class CaptureSession
                 var ed = new EditorWindow(doc);
                 ed.Show();
                 ed.Activate();
+                if (hd is { Image: null }) Hud.Show(badge!, "info", ed);
                 return;
             }
 
@@ -232,7 +290,7 @@ public sealed class CaptureSession
                 var bytes = await Task.Run(() => ImageIO.Encode(output, fmt));
                 await File.WriteAllBytesAsync(dlg.FileName, bytes);
                 if (s.CopyToClipboard) ImageIO.CopyToClipboard(output);
-                Hud.Show(L.T("Capture.Saved"), "check");
+                Hud.Show(hd is { Image: null } ? badge! : L.T("Capture.Saved"), hd is { Image: null } ? "info" : "check");
                 App.Instance?.NotifyScreenshotsChanged();
                 return;
             }
@@ -247,7 +305,8 @@ public sealed class CaptureSession
             }
             if (s.CopyToClipboard) ImageIO.CopyToClipboard(output, pngBytes);
 
-            if (s.ShowThumbnail) CaptureToast.Show(output, saved, monitor);
+            if (s.ShowThumbnail) CaptureToast.Show(output, saved, monitor, badge, badgeGood);
+            else if (hd is { Image: null }) Hud.Show(badge!, "info");
             else Hud.Show(s.CopyToClipboard ? L.T("Capture.Copied") : L.T("Capture.Saved"), s.CopyToClipboard ? "copy" : "check");
         }
         catch (Exception ex)
@@ -262,6 +321,7 @@ public sealed class CaptureSession
 
     public void HandleKey(CaptureOverlayWindow source, KeyEventArgs e)
     {
+        if (_finished) { e.Handled = true; return; } // an HD render is under way
         var mods = Keyboard.Modifiers;
         switch (e.Key)
         {
@@ -280,6 +340,10 @@ public sealed class CaptureSession
                 break;
             case Key.E when mods == ModifierKeys.None:
                 source.Commit(CaptureAction.Edit);
+                e.Handled = true;
+                break;
+            case Key.H when mods == ModifierKeys.None:
+                ToggleHd();
                 e.Handled = true;
                 break;
             case Key.Left: source.Nudge(-1, 0, mods.HasFlag(ModifierKeys.Shift)); e.Handled = true; break;

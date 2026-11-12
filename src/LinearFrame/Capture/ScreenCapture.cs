@@ -20,6 +20,7 @@ public sealed record MonitorInfo(IntPtr Handle, Int32Rect Bounds, Int32Rect Work
             if (Native.GetMonitorInfo(h, ref info))
             {
                 double scale = 1.0;
+                if (VirtualScreen.IsVirtualDevice(info.szDevice)) return true; // the off-screen HD canvas is not a screen to capture
                 if (Native.GetDpiForMonitor(h, 0, out uint dpi, out _) == 0 && dpi > 0) scale = dpi / 96.0;
                 var b = info.rcMonitor;
                 var w = info.rcWork;
@@ -44,9 +45,36 @@ public sealed record MonitorInfo(IntPtr Handle, Int32Rect Bounds, Int32Rect Work
 /// <summary>GDI screen capture of the composed desktop (fast, works for every window type DWM can compose).</summary>
 public static class ScreenCapturer
 {
-    public static PixelBuffer Capture(Int32Rect r)
+    /// <summary>Screen pixels as a buffer to work on (HD render checks, self-tests).</summary>
+    public static PixelBuffer Capture(Int32Rect r, bool quiet = false)
     {
         var sw = Stopwatch.StartNew();
+        var pb = new PixelBuffer(r.Width, r.Height);
+        Blit(r, bits => Marshal.Copy(bits, pb.Data, 0, pb.Data.Length));
+        pb.ForceOpaque();
+        if (!quiet) Log.Info($"Captured {r.Width}x{r.Height} in {sw.ElapsedMilliseconds} ms");
+        return pb;
+    }
+
+    /// <summary>
+    /// Screen pixels straight into a picture for the overlay: one copy from GDI into the bitmap, nothing in between
+    /// (Bgr32 has no alpha channel, so there is nothing to fix up either).
+    /// </summary>
+    public static BitmapSource CaptureBitmap(Int32Rect r)
+    {
+        var sw = Stopwatch.StartNew();
+        BitmapSource? bmp = null;
+        Blit(r, bits =>
+        {
+            bmp = BitmapSource.Create(r.Width, r.Height, 96, 96, PixelFormats.Bgr32, null, bits, r.Width * r.Height * 4, r.Width * 4);
+            bmp.Freeze();
+        });
+        Log.Info($"Captured {r.Width}x{r.Height} in {sw.ElapsedMilliseconds} ms");
+        return bmp!;
+    }
+
+    private static void Blit(Int32Rect r, Action<IntPtr> use)
+    {
         IntPtr screen = Native.GetDC(IntPtr.Zero);
         IntPtr mem = Native.CreateCompatibleDC(screen);
         var bmi = new Native.BITMAPINFOHEADER
@@ -58,13 +86,12 @@ public static class ScreenCapturer
             biBitCount = 32,
         };
         IntPtr hbmp = Native.CreateDIBSection(screen, ref bmi, 0, out IntPtr bits, IntPtr.Zero, 0);
-        var pb = new PixelBuffer(r.Width, r.Height);
         try
         {
             IntPtr old = Native.SelectObject(mem, hbmp);
             Native.BitBlt(mem, 0, 0, r.Width, r.Height, screen, r.X, r.Y, Native.SRCCOPY | Native.CAPTUREBLT);
             Native.SelectObject(mem, old);
-            Marshal.Copy(bits, pb.Data, 0, pb.Data.Length);
+            use(bits);
         }
         finally
         {
@@ -72,18 +99,20 @@ public static class ScreenCapturer
             Native.DeleteDC(mem);
             Native.ReleaseDC(IntPtr.Zero, screen);
         }
-        pb.ForceOpaque();
-        Log.Info($"Captured {r.Width}x{r.Height} in {sw.ElapsedMilliseconds} ms");
-        return pb;
     }
 }
 
-/// <summary>Visible top-level windows in z-order (front first), used for "click a window to capture it".</summary>
+/// <summary>A visible top-level window at the moment of the capture (bounds = what you see, in physical pixels).</summary>
+public sealed record WindowEntry(IntPtr Handle, Int32Rect Bounds);
+
+/// <summary>Visible top-level windows in z-order (front first), used for "click a window to capture it" and HD re-rendering.</summary>
 public static class WindowFinder
 {
-    public static List<Int32Rect> VisibleWindows()
+    public static List<Int32Rect> VisibleWindows() => Snapshot().Select(w => w.Bounds).ToList();
+
+    public static List<WindowEntry> Snapshot()
     {
-        var list = new List<Int32Rect>();
+        var list = new List<WindowEntry>();
         uint ownPid = (uint)Environment.ProcessId;
         Native.EnumWindows((h, _) =>
         {
@@ -106,7 +135,7 @@ public static class WindowFinder
                 if (Native.DwmGetWindowAttribute(h, Native.DWMWA_EXTENDED_FRAME_BOUNDS, out Native.RECT r, Marshal.SizeOf<Native.RECT>()) != 0)
                     Native.GetWindowRect(h, out r);
                 if (r.Width < 6 || r.Height < 6) return true;
-                list.Add(new Int32Rect(r.Left, r.Top, r.Width, r.Height));
+                list.Add(new WindowEntry(h, new Int32Rect(r.Left, r.Top, r.Width, r.Height)));
             }
             catch { /* ignore odd windows */ }
             return true;

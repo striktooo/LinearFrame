@@ -11,7 +11,7 @@ namespace LinearFrame.Core;
 /// <summary>Hidden top-level window that receives hotkeys, tray callbacks, IPC and system broadcasts.</summary>
 internal sealed class MessageWindow : IDisposable
 {
-    public const string Title = "LinearFrame.MessageWindow";
+    public static readonly string Title = "LinearFrame.MessageWindow" + AppPaths.Instance;
     private readonly HwndSource _source;
     private readonly List<Func<int, IntPtr, IntPtr, bool>> _handlers = new();
 
@@ -667,23 +667,33 @@ internal static class Memory
     private static void OnTick(object? sender, EventArgs e)
     {
         _timer?.Stop();
-        // Only trim when the app is really idle in the tray - never while something is on screen.
-        bool busy = Capture.CaptureSession.Current != null ||
-                    Application.Current.Windows.Cast<Window>().Any(w => w.IsVisible && !w.Title.StartsWith("LinearFrame.Hud"));
-        if (busy) return;
-        TrimNow();
+        if (Capture.CaptureSession.Current != null) { TrimSoon(3000); return; } // a capture is on screen - come back later
+        // The garbage of the last capture / edit / export (screen-sized bitmaps) is always given back, also while the
+        // main window or an editor is open. The memory pages themselves are handed back to Windows only while LinearFrame
+        // is not what you are working in (no window of ours in front, no video open) - under your hands that would
+        // cost a moment of stutter, in the background it costs nothing.
+        TrimNow(releasePages: !InUse());
     }
 
-    public static void TrimNow()
+    private static bool InUse()
+    {
+        if (Application.Current.Windows.OfType<Player.PlayerWindow>().Any(w => w.IsVisible)) return true; // playback must stay smooth
+        Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out uint pid);
+        return pid == (uint)Environment.ProcessId;
+    }
+
+    public static void TrimNow(bool releasePages = true)
     {
         try
         {
             long before = Environment.WorkingSet;
             System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
-            GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
-            GC.WaitForPendingFinalizers();
-            bool ok = Native.SetProcessWorkingSetSizeEx(Native.GetCurrentProcess(), new IntPtr(-1), new IntPtr(-1), 0);
-            Log.Info($"Trim: ok={ok} ws {before / 1048576} MB -> {Environment.WorkingSet / 1048576} MB, gc heap {GC.GetTotalMemory(false) / 1048576} MB");
+            GC.Collect(GC.MaxGeneration, releasePages ? GCCollectionMode.Aggressive : GCCollectionMode.Forced, true, true);
+            GC.WaitForPendingFinalizers(); // WPF bitmaps free their (unmanaged) pixels in finalizers...
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, false); // ...and what those kept alive goes now
+            bool ok = releasePages && Native.SetProcessWorkingSetSizeEx(Native.GetCurrentProcess(), new IntPtr(-1), new IntPtr(-1), 0);
+            using var me = System.Diagnostics.Process.GetCurrentProcess();
+            Log.Info($"Trim{(releasePages ? "" : " (window open)")}: ws {before / 1048576} MB -> {Environment.WorkingSet / 1048576} MB, private {me.PrivateMemorySize64 / 1048576} MB, gc heap {GC.GetTotalMemory(false) / 1048576} MB, overlays alive {Capture.CaptureOverlayWindow.Alive}{(releasePages && !ok ? ", pages not released" : "")}");
         }
         catch (Exception ex) { Log.Error("Trim failed", ex); }
     }

@@ -148,7 +148,7 @@ internal static class Marketing
         }
         deskRoot.Children.Add(winVisual);
         var desktop = PixelBuffer.FromBitmap(Render(deskRoot, DW, DH));
-        var (session, overlay) = CaptureSession.CreateForTest(App.Instance!.Settings, desktop);
+        var (session, overlay) = CaptureSession.CreateForTest(App.Instance!.Settings, desktop, hd: true);
         session.SetSize(ExportSize.UHD4K);
         var ovRoot = (FrameworkElement)overlay.Content;
         ovRoot.Measure(new Size(DW, DH));
@@ -203,10 +203,7 @@ internal static class Marketing
     {
         w.FolderText.Text = L.IsPolish ? @"Obrazy\LinearFrame" : @"Pictures\LinearFrame";
         w.RegionHotkey2Box.Gesture = new HotkeyGesture(System.Windows.Input.ModifierKeys.None, HotMouse.XButton2);
-        w.ShowRetinaForTest(new RetinaStatus(new[]
-        {
-            new DisplayState(@"\\.\DISPLAY1", L.IsPolish ? "Monitor 24\"" : "24\" monitor", "NVIDIA GeForce", 0, 0, 3840, 2160, 144, true, 1920, 1080, 200, 0),
-        }));
+        w.ShowHdForTest(true);
     }
 
     private static BitmapSource BeforeAfter(BitmapSource before, BitmapSource after)

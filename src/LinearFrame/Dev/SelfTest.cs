@@ -282,31 +282,216 @@ internal static class SelfTest
             finally { sink.Dispose(); }
         });
 
-        Check("Retina: monitors and 2× modes (read-only)", () =>
+        Check("displays (read-only)", () =>
         {
             var sw = Stopwatch.StartNew();
-            var st = Retina.Query();
+            var list = Displays.Query();
             long ms = sw.ElapsedMilliseconds;
-            if (st.Displays.Count == 0) throw new Exception("no displays");
-            return $"{ms} ms, vendor {st.Vendor}, on={st.IsOn}, canToggle={st.CanToggle}: " + string.Join("; ", st.Displays.Select(d =>
-                $"{d.Name} {d.Width}x{d.Height}@{d.Frequency} at {d.X},{d.Y} native {d.NativeWidth}x{d.NativeHeight} scale {d.ScalePercent}% 2x-mode {(d.DoubleFrequency > 0 ? d.DoubleFrequency + " Hz" : "none")}{(d.Primary ? " primary" : "")}"));
+            if (!list.Any(d => d.Attached)) throw new Exception("no attached display");
+            var v = VirtualScreen.Find();
+            return $"{ms} ms: " + string.Join("; ", list.Where(d => d.Attached || d.IsVirtual).Select(d =>
+                $"{d.Device.Replace(@"\\.\", "")} {d.Width}x{d.Height}@{d.Frequency} at {d.X},{d.Y} {d.ScalePercent}%{(d.Primary ? " primary" : "")}{(d.IsVirtual ? (d.Attached ? " VIRTUAL" : " VIRTUAL (off)") : "")}"))
+                + $"; HD driver present: {HdSetup.DevicePresent()}, virtual screen: {v != null}";
         });
 
-        Check("Retina: monitor layout stays connected", () =>
+        Check("HD: which window owns a selection", () =>
         {
             Int32Rect R(int x, int y, int w, int h) => new(x, y, w, h);
-            var row = new[] { R(-1920, 0, 1920, 1080), R(0, 0, 1920, 1080), R(1920, 120, 1920, 1080) };
-            var all = Retina.Relayout(row, new[] { (3840, 2160), (3840, 2160), (3840, 2160) }, 1)!;
-            if (all[0] != (-3840, 0) || all[1] != (0, 0) || all[2] != (3840, 240)) throw new Exception($"row: {string.Join(" ", all)}");
-            var mixed = Retina.Relayout(row, new[] { (1920, 1080), (3840, 2160), (3840, 2160) }, 1)!;
-            if (mixed[0] != (-1920, 0) || mixed[2] != (3840, 240)) throw new Exception($"mixed: {string.Join(" ", mixed)}");
-            var back = Retina.Relayout(all.Select((p, i) => R(p.X, p.Y, 3840, 2160)).ToArray(), new[] { (1920, 1080), (1920, 1080), (1920, 1080) }, 1)!;
-            if (back[0] != (-1920, 0) || back[2] != (1920, 120)) throw new Exception($"back: {string.Join(" ", back)}");
-            var stack = Retina.Relayout(new[] { R(0, 0, 1920, 1080), R(0, -1080, 1920, 1080) }, new[] { (3840, 2160), (3840, 2160) }, 0)!;
-            if (stack[1] != (0, -2160)) throw new Exception($"stack: {string.Join(" ", stack)}");
-            var gap = Retina.Relayout(new[] { R(0, 0, 1920, 1080), R(2500, 0, 1920, 1080) }, new[] { (3840, 2160), (3840, 2160) }, 0);
-            if (gap != null) throw new Exception("a detached monitor must not be guessed");
-            return "row, mixed, back, stacked, detached ok";
+            var front = new WindowEntry(new IntPtr(1), R(100, 100, 400, 300));
+            var back = new WindowEntry(new IntPtr(2), R(0, 0, 1920, 1040));
+            var list = new List<WindowEntry> { front, back };
+            var inside = HdCapture.PickWindow(list, R(150, 150, 100, 50));
+            var behind = HdCapture.PickWindow(list, R(700, 500, 200, 100));
+            var crossing = HdCapture.PickWindow(list, R(450, 350, 200, 100));
+            var desktop = HdCapture.PickWindow(new List<WindowEntry> { front }, R(900, 700, 50, 50));
+            if (inside.Window != front || behind.Window != back) throw new Exception("wrong window");
+            if (crossing.Failure != HdFailure.SeveralWindows || desktop.Failure != HdFailure.Desktop) throw new Exception($"{crossing.Failure} / {desktop.Failure}");
+            return "front, back, crossing an edge, desktop ok";
+        });
+
+        Check("HD: a real 2×/3×/4× render is told apart from a stretched picture and from other content", () =>
+        {
+            var notes = new List<string>();
+            var normal = MakeFakeUi(520, 300, 1, crisp: true); // what is on screen: hinted, pixel-snapped text
+            var sel = new Int32Rect(24, 24, 440, 130);
+            var frozen = normal.Crop(sel);
+            var fg = ImageMatch.ToGray(frozen);
+            var fb = ImageMatch.Blur(fg);
+            foreach (int k in new[] { 2, 3, 4 })
+            {
+                int margin = 16 * k, w = sel.Width * k, h = sel.Height * k;
+                Int32Rect Area(int shiftX, int shiftY) => new((sel.X - shiftX) * k - margin, (sel.Y - shiftY) * k - margin, w + 2 * margin, h + 2 * margin);
+
+                // a) the app really drew itself k times bigger - and its content sits 3 px right / 2 px up of where expected
+                var real = MakeFakeUi(520, 300, k);
+                var v = HdCapture.Judge(real.Crop(Area(3, -2)), margin, margin, w, h, k, fg, fb);
+                // (hinted on-screen text sits up to a pixel away from where smooth text is - one pixel of play is expected)
+                if (!v.Match || Math.Abs(v.Dx - 3) > 1 || Math.Abs(v.Dy + 2) > 1) throw new Exception($"{k}×: real render not found (match {v.Match}, difference {v.Difference:0.0}, alike {v.Similarity:0.00}, shift {v.Dx},{v.Dy})");
+                if (!(v.Gain >= HdCapture.GainGood(k))) throw new Exception($"{k}×: real render has gain {v.Gain:0.00}, needs {HdCapture.GainGood(k):0.00}");
+                if (v.Crop!.Width != w || v.Crop.Height != h) throw new Exception("crop size");
+                if (k == 4) Save(v.Crop.ToBitmap(), Path.Combine(dir, "hd-real-4x.png"));
+
+                // b) Windows only stretched the old picture (an app that ignores the new scaling) - same content, no detail
+                var stretched = Stretch(normal, k);
+                var v2 = HdCapture.Judge(stretched.Crop(Area(0, 0)), margin, margin, w, h, k, fg, fb);
+                if (!v2.Match) throw new Exception($"{k}×: stretched picture should still be recognised (difference {v2.Difference:0.0}, alike {v2.Similarity:0.00})");
+                if (!(v2.Gain < HdCapture.GainMin(k))) throw new Exception($"{k}×: a stretched picture passed as real detail (gain {v2.Gain:0.00})");
+                if (k == 4) Save(v2.Crop!.ToBitmap(), Path.Combine(dir, "hd-stretched-4x.png"));
+
+                // c) the window shows something else now (same dark theme, other content)
+                var other = MakeFakeUi(520, 300, k, variant: true);
+                var v3 = HdCapture.Judge(other.Crop(Area(0, 0)), margin, margin, w, h, k, fg, fb);
+                if (v3.Match) throw new Exception($"{k}×: other content passed as the selection (difference {v3.Difference:0.0}, alike {v3.Similarity:0.00})");
+
+                notes.Add($"{k}×: real gain {v.Gain:0.00} (alike {v.Similarity:0.00}, difference {v.Difference:0.0}, shift {v.Dx},{v.Dy}), stretched {v2.Gain:0.00}, other content alike {v3.Similarity:0.00}");
+            }
+            // flat content: nothing to judge, nothing to object to
+            var flat = new PixelBuffer(100, 60); flat.ForceOpaque();
+            var flatHd = new PixelBuffer(100 * 4 + 128, 60 * 4 + 128); flatHd.ForceOpaque();
+            var vf = HdCapture.Judge(flatHd, 64, 64, 400, 240, 4, ImageMatch.ToGray(flat), ImageMatch.Blur(ImageMatch.ToGray(flat)));
+            if (!vf.Match || !double.IsNaN(vf.Gain) || vf.Dx != 0 || vf.Dy != 0) throw new Exception("flat content");
+            return string.Join("; ", notes);
+        });
+
+        Check("HD: driver set-up plumbing (read-only)", () =>
+        {
+            var (cls, name) = HdSetup.InfClass(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF", "display.inf"));
+            if (name != "Display" || cls != new Guid("4d36e968-e325-11ce-bfc1-08002be10318")) throw new Exception($"display.inf → {name} {cls}");
+            bool present = HdSetup.DevicePresent();
+            var own = System.Xml.Linq.XDocument.Parse(HdSetup.SettingsXml(null));
+            var kept = System.Xml.Linq.XDocument.Parse(HdSetup.SettingsXml(
+                "<?xml version='1.0' encoding='utf-8'?><vdd_settings><monitors><count>3</count></monitors><global><g_refresh_rate>60</g_refresh_rate><g_refresh_rate>144</g_refresh_rate></global>" +
+                "<resolutions><resolution><width>800</width><height>600</height><refresh_rate>30</refresh_rate></resolution></resolutions><options><HardwareCursor>true</HardwareCursor></options></vdd_settings>"));
+            foreach (var doc in new[] { own, kept })
+            {
+                var res = doc.Root!.Element("resolutions")!.Elements("resolution").ToList();
+                if (res.Count != 4 || doc.Root.Element("monitors")!.Element("count")!.Value != "1" || doc.Root.Element("global")!.Elements("g_refresh_rate").Count() != 1)
+                    throw new Exception("settings XML: " + doc);
+                if (!res.Any(r => r.Element("width")!.Value == "7680" && r.Element("height")!.Value == "4320")) throw new Exception("8K mode missing");
+            }
+            if (kept.Root!.Element("options")?.Element("HardwareCursor")?.Value != "true") throw new Exception("the driver's own settings were not kept");
+            return $"display.inf → {name}; driver present: {present}; settings XML ok";
+        });
+
+        Check("HD: live round-trip of a window via another monitor (mechanics only, same scaling)", () =>
+        {
+            var mons = MonitorInfo.All();
+            var src = mons.FirstOrDefault(m => m.Primary) ?? mons[0];
+            var dst = mons.FirstOrDefault(m => m != src);
+            if (dst == null) return "skipped (needs a second monitor)";
+
+            var face = new FontFamily("Segoe UI");
+            var panel = new StackPanel { Margin = new Thickness(18), Background = new SolidColorBrush(Color.FromRgb(0x2B, 0x2D, 0x31)) };
+            panel.Children.Add(new TextBlock { Text = "LinearFrame HD", FontSize = 22, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White, FontFamily = face });
+            panel.Children.Add(new TextBlock { Text = "Okno testowe — przenosiny na drugi ekran i z powrotem.", FontSize = 13, Foreground = Brushes.Gainsboro, FontFamily = face, Margin = new Thickness(0, 8, 0, 12), TextWrapping = TextWrapping.Wrap });
+            panel.Children.Add(new Border { Height = 44, Width = 200, CornerRadius = new CornerRadius(8), Background = new SolidColorBrush(Color.FromRgb(0x58, 0x65, 0xF2)), HorizontalAlignment = HorizontalAlignment.Left,
+                Child = new TextBlock { Text = "Zapisz zmiany", Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, FontFamily = face } });
+            double k = src.Scale;
+            var win = new Window
+            {
+                Title = "LinearFrame HD test", Width = 440, Height = 300, Topmost = true, ShowActivated = false, ShowInTaskbar = false,
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                Left = (src.WorkArea.X + src.WorkArea.Width / 2 - 220 * k) / k, Top = (src.WorkArea.Y + src.WorkArea.Height / 2 - 150 * k) / k,
+                Background = new SolidColorBrush(Color.FromRgb(0x2B, 0x2D, 0x31)), Content = panel,
+            };
+            win.Show();
+            try
+            {
+                Pump(TimeSpan.FromMilliseconds(700), () => false); // let it appear (open animation) and paint
+                var hwnd = new System.Windows.Interop.WindowInteropHelper(win).Handle;
+                Native.GetWindowRect(hwnd, out var r0);
+                var entries = WindowFinder.Snapshot();
+                // the inner part of the window, in the monitor's own pixels
+                var sel = new Int32Rect(r0.Left + (int)(40 * k) - src.Bounds.X, r0.Top + (int)(60 * k) - src.Bounds.Y, (int)(320 * k), (int)(170 * k));
+                var frozen = ScreenCapturer.Capture(new Int32Rect(src.Bounds.X + sel.X, src.Bounds.Y + sel.Y, sel.Width, sel.Height), quiet: true);
+                var target = new VirtualScreen.Armed("test", dst.Bounds, dst.WorkArea, (int)Math.Round(dst.Scale * 100), (uint)Math.Round(dst.Scale * 96));
+
+                HdResult? res = null;
+                var task = Task.Run(() => res = HdCapture.RenderOn(entries, src, sel, frozen, 1, (_, _) => target, sameScaleOk: true, Stopwatch.StartNew()));
+                Pump(TimeSpan.FromSeconds(10), () => task.IsCompleted);
+                if (!task.IsCompleted) throw new Exception("the round-trip did not finish");
+                Pump(TimeSpan.FromMilliseconds(150), () => false);
+                Native.GetWindowRect(hwnd, out var r1);
+                if (res?.Image == null) throw new Exception($"no picture: {res?.Failure} ({res?.Detail})");
+                if (r1.Left != r0.Left || r1.Top != r0.Top || r1.Width != r0.Width || r1.Height != r0.Height) throw new Exception($"window not put back: {r1} instead of {r0}");
+                Save(res.Image.ToBitmap(), Path.Combine(dir, "hd-roundtrip.png"));
+                return $"{res.Image.Width}x{res.Image.Height} at {res.Scale:0.##}× via {dst.Bounds.Width}x{dst.Bounds.Height}; window back at {r1}; {res.Detail}";
+            }
+            finally { win.Close(); }
+        });
+
+        Check("update: the small package is taken only when the installed engine matches", () =>
+        {
+            string app = Path.Combine(dir, "upd-app");
+            Directory.CreateDirectory(Path.Combine(app, "engine"));
+            File.WriteAllBytes(Path.Combine(app, "engine", "a.bin"), new byte[] { 1, 2, 3, 4 });
+            File.WriteAllBytes(Path.Combine(app, "engine", "b.bin"), new byte[] { 9, 9 });
+            static string H(params byte[] b) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(b));
+            string? Ask(string list) => Task.Run(() => Updater.SmallPackageHashAsync(list, app, default)).GetAwaiter().GetResult();
+            string zip = H(7);
+            string list = $"{zip}  LinearFrame-9.9.9-update.zip\r\n{H(1, 2, 3, 4)}  engine/a.bin\r\n{H(9, 9)}  engine/b.bin\r\n";
+            if (Ask(list) != zip) throw new Exception("matching engine not accepted");
+            if (Ask(list + $"{H(5)}  engine/missing.dll\n") != null) throw new Exception("a missing engine file must mean: full package");
+            if (Ask($"{zip}  x.zip\n{H(1)}  ../outside.bin\n") != null) throw new Exception("paths outside the engine folder must be refused");
+            if (Ask("not a checksum list") != null) throw new Exception("garbage accepted");
+            File.WriteAllBytes(Path.Combine(app, "engine", "b.bin"), new byte[] { 9, 8 });
+            if (Ask(list) != null) throw new Exception("a changed engine must mean: full package");
+            return "matching engine, changed engine, missing file, outside path, garbage: ok";
+        });
+
+        Check("overlay: cost of drawing one frame without the GPU (1920×1080)", () =>
+        {
+            // The software rasteriser is what an overlay window uses when it is not GPU-accelerated; drawing into a bitmap
+            // goes through the same code, so this is the time one full redraw (a moving selection) would take.
+            var (session, overlay) = CaptureSession.CreateForTest(App.Instance!.Settings, MakeFakeUi(1920, 1080));
+            var rootEl = (FrameworkElement)overlay.Content;
+            rootEl.Measure(new Size(1920, 1080));
+            rootEl.Arrange(new Rect(0, 0, 1920, 1080));
+            rootEl.UpdateLayout();
+            var rtb = new RenderTargetBitmap(1920, 1080, 96, 96, PixelFormats.Pbgra32);
+            overlay.SelectForTest(new Int32Rect(100, 100, 300, 200));
+            rtb.Render(rootEl); // warm-up
+            var sw = Stopwatch.StartNew();
+            const int Frames = 30;
+            for (int i = 0; i < Frames; i++)
+            {
+                overlay.SelectForTest(new Int32Rect(100 + i * 12, 100 + i * 6, 300 + i * 30, 200 + i * 20));
+                rtb.Clear();
+                rtb.Render(rootEl);
+            }
+            double ms = sw.Elapsed.TotalMilliseconds / Frames;
+            session.Cancel();
+            return $"{ms:0.0} ms per full frame (≈ {1000 / ms:0} fps)";
+        });
+
+        Check("memory: what a capture leaves behind is given back (also with a window open)", () =>
+        {
+            static long PrivateMb() { using var p = Process.GetCurrentProcess(); return p.PrivateMemorySize64 / 1048576; }
+            Memory.TrimNow(releasePages: false);
+            long before = PrivateMb(), peak = 0;
+            for (int i = 0; i < 4; i++)
+            {
+                // three "monitors" worth of frozen screens, like a capture on a 3-monitor desk
+                var sessions = Enumerable.Range(0, 3).Select(_ => CaptureSession.CreateForTest(App.Instance!.Settings, MakeFakeUi(1920, 1080))).ToList();
+                foreach (var (_, overlay) in sessions)
+                {
+                    var rootEl = (FrameworkElement)overlay.Content;
+                    rootEl.Measure(new Size(1920, 1080));
+                    rootEl.Arrange(new Rect(0, 0, 1920, 1080));
+                    overlay.SelectForTest(new Int32Rect(300, 200, 600, 400));
+                }
+                peak = Math.Max(peak, PrivateMb());
+                foreach (var (session, _) in sessions) session.Cancel();
+            }
+            // like the real app: the message loop turns (closed windows let go of their pictures), then the clean-up runs
+            Pump(TimeSpan.FromMilliseconds(300), () => false);
+            Memory.TrimNow(releasePages: false);
+            Pump(TimeSpan.FromMilliseconds(200), () => false);
+            long after = PrivateMb();
+            var gc = GC.GetGCMemoryInfo();
+            string detail = $"private memory {before} MB → peak {peak} MB → {after} MB after clean-up (managed heap {GC.GetTotalMemory(false) / 1048576} MB, committed {gc.TotalCommittedBytes / 1048576} MB, windows alive {Application.Current.Windows.Count})";
+            if (after - before > 40) throw new Exception("too much stayed behind: " + detail);
+            return detail;
         });
 
         Check("Start menu shortcut (.lnk in the test folder)", () =>
@@ -419,22 +604,53 @@ internal static class SelfTest
         return $"frame {f.Width}x{f.Height} at {f.X},{f.Y}; FHD export ok; fill {bg}";
     }
 
-    private static PixelBuffer MakeFakeUi(int w, int h)
+    /// <param name="scale">draw everything this many times bigger (a real render at that scale, not a stretched one)</param>
+    /// <param name="crisp">text as it is on a normal screen: hinted and snapped to whole pixels</param>
+    /// <param name="variant">another window in the same theme (different texts and layout)</param>
+    private static PixelBuffer MakeFakeUi(int w, int h, int scale = 1, bool crisp = false, bool variant = false)
     {
         var dv = new DrawingVisual();
         using (var dc = dv.RenderOpen())
         {
+            dc.PushTransform(new ScaleTransform(scale, scale));
+            var mode = crisp ? TextFormattingMode.Display : TextFormattingMode.Ideal;
+            FormattedText Text(string t, Typeface f, double size, Brush b) =>
+                new(t, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, f, size, b, null, mode, 1.0);
+            var semibold = new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
+            var regular = new Typeface("Segoe UI");
+            var grey = new SolidColorBrush(Color.FromRgb(0xB0, 0xB3, 0xB8));
             dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(0x2B, 0x2D, 0x31)), null, new Rect(0, 0, w, h));
-            dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(0x38, 0x3A, 0x40)), null, new Rect(24, 24, 240, 120), 10, 10);
-            var face = new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
-            dc.DrawText(new FormattedText("Ustawienia konta", CultureInfo.InvariantCulture, FlowDirection.LeftToRight, face, 18, Brushes.White, 1.0), new Point(40, 40));
-            dc.DrawText(new FormattedText("Powiadomienia e-mail", CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), 13, new SolidColorBrush(Color.FromRgb(0xB0, 0xB3, 0xB8)), 1.0), new Point(40, 96));
-            dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(0x58, 0x65, 0xF2)), null, new Rect(300, 50, 160, 40), 8, 8);
-            dc.DrawText(new FormattedText("Zapisz zmiany", CultureInfo.InvariantCulture, FlowDirection.LeftToRight, face, 14, Brushes.White, 1.0), new Point(332, 60));
-            dc.DrawEllipse(new SolidColorBrush(Color.FromRgb(0x3B, 0xA5, 0x5D)), null, new Point(80, 210), 26, 26);
+            if (!variant)
+            {
+                dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(0x38, 0x3A, 0x40)), null, new Rect(24, 24, 240, 120), 10, 10);
+                dc.DrawText(Text("Ustawienia konta", semibold, 18, Brushes.White), new Point(40, 40));
+                dc.DrawText(Text("Powiadomienia e-mail", regular, 13, grey), new Point(40, 96));
+                dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(0x58, 0x65, 0xF2)), null, new Rect(300, 50, 160, 40), 8, 8);
+                dc.DrawText(Text("Zapisz zmiany", semibold, 14, Brushes.White), new Point(332, 60));
+                dc.DrawEllipse(new SolidColorBrush(Color.FromRgb(0x3B, 0xA5, 0x5D)), null, new Point(80, 210), 26, 26);
+            }
+            else
+            {
+                dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(0x38, 0x3A, 0x40)), null, new Rect(150, 40, 300, 96), 10, 10);
+                dc.DrawText(Text("Historia płatności", semibold, 18, Brushes.White), new Point(170, 52));
+                dc.DrawText(Text("Ostatnie 30 dni — 12 pozycji", regular, 13, grey), new Point(170, 100));
+                dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(0xED, 0x42, 0x45)), null, new Rect(30, 60, 96, 40), 8, 8);
+                dc.DrawText(Text("Usuń", semibold, 14, Brushes.White), new Point(58, 70));
+                dc.DrawEllipse(new SolidColorBrush(Color.FromRgb(0x3B, 0xA5, 0x5D)), null, new Point(380, 220), 26, 26);
+            }
+            dc.Pop();
         }
-        var rtb = RenderVisual(dv, w, h);
+        var rtb = RenderVisual(dv, w * scale, h * scale);
         return PixelBuffer.FromBitmap(rtb);
+    }
+
+    /// <summary>A picture blown up k times with plain bilinear filtering - what Windows shows for an app that ignores scaling.</summary>
+    private static PixelBuffer Stretch(PixelBuffer src, int k)
+    {
+        var dv = new DrawingVisual();
+        RenderOptions.SetBitmapScalingMode(dv, BitmapScalingMode.Linear);
+        using (var dc = dv.RenderOpen()) dc.DrawImage(src.ToBitmap(), new Rect(0, 0, src.Width * k, src.Height * k));
+        return PixelBuffer.FromBitmap(RenderVisual(dv, src.Width * k, src.Height * k));
     }
 
     private static BitmapSource RenderVisual(Visual v, int w, int h)
@@ -604,7 +820,6 @@ internal static class SelfTest
     private static void RenderUi(string dir)
     {
         Directory.CreateDirectory(dir);
-        _ = App.Instance!.RetinaState; // real monitors, synchronously (the app itself loads this in the background)
         void Snap(FrameworkElement el, int w, int h, string file, Brush bg)
         {
             el.Measure(new Size(w, h));
@@ -666,15 +881,22 @@ internal static class SelfTest
         // floating thumbnail after a capture
         var toastMon = new MonitorInfo(IntPtr.Zero, new Int32Rect(0, 0, 1920, 1080), new Int32Rect(0, 0, 1920, 1040), 1.0, true);
         var toastWin = (Window)Activator.CreateInstance(typeof(CaptureToast), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance, null,
-            new object?[] { MakeFakeUi(640, 360).ToBitmap(), null, toastMon }, null)!;
+            new object?[] { MakeFakeUi(640, 360).ToBitmap(), null, toastMon, "HD 4×", true }, null)!;
         var toastRoot = (FrameworkElement)toastWin.Content;
         toastWin.Content = null;
         Snap(toastRoot, 300, 220, "toast.png", new SolidColorBrush(Color.FromRgb(0x5A, 0x6E, 0x8C)));
         toastWin.Close();
+        // ...and one that could not be rendered in HD (says why), from a small selection
+        var plainWin = (Window)Activator.CreateInstance(typeof(CaptureToast), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance, null,
+            new object?[] { MakeFakeUi(200, 240).ToBitmap(), null, toastMon, HdCapture.Explain(HdFailure.Desktop), false }, null)!;
+        var plainRoot = (FrameworkElement)plainWin.Content;
+        plainWin.Content = null;
+        Snap(plainRoot, 300, 220, "toast-1x.png", new SolidColorBrush(Color.FromRgb(0x5A, 0x6E, 0x8C)));
+        plainWin.Close();
 
         // capture overlay (synthetic screen, simulated selection)
         var screen = MakeFakeUi(1280, 720);
-        var (session, overlay) = CaptureSession.CreateForTest(App.Instance!.Settings, screen);
+        var (session, overlay) = CaptureSession.CreateForTest(App.Instance!.Settings, screen, hd: true);
         var ovlRoot = (FrameworkElement)overlay.Content;
         ovlRoot.Measure(new Size(1280, 720));
         ovlRoot.Arrange(new Rect(0, 0, 1280, 720));

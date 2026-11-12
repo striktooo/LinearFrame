@@ -52,16 +52,16 @@ public partial class MainWindow : Window
         if (App.Instance != null)
         {
             App.Instance.UpdateStateChanged += OnUpdateState;
-            App.Instance.RetinaChanged += OnRetinaChanged;
+            App.Instance.HdChanged += OnHdChanged;
         }
         UpdateUpdatesUi();
-        RefreshRetinaUi();
+        RefreshHdUi();
         Closed += (_, _) =>
         {
             if (App.Instance != null)
             {
                 App.Instance.UpdateStateChanged -= OnUpdateState;
-                App.Instance.RetinaChanged -= OnRetinaChanged;
+                App.Instance.HdChanged -= OnHdChanged;
             }
             _watcher?.Dispose();
             _thumbCts?.Cancel();
@@ -95,7 +95,7 @@ public partial class MainWindow : Window
         ScreensPage.Visibility = tag == "screens" ? Visibility.Visible : Visibility.Collapsed;
         PlayerPage.Visibility = tag == "player" ? Visibility.Visible : Visibility.Collapsed;
         SettingsPage.Visibility = tag == "settings" ? Visibility.Visible : Visibility.Collapsed;
-        if (tag == "settings") _ = App.Instance?.RefreshRetinaAsync(); // DSR may have been switched on in the driver meanwhile
+        if (tag == "settings") App.Instance?.RefreshHd();
     }
 
     // =============================================================== screenshots
@@ -499,107 +499,78 @@ public partial class MainWindow : Window
 
     private void KeyboardSettings_Click(object sender, RoutedEventArgs e) => ShellUtil.Open("ms-settings:easeofaccess-keyboard");
 
-    // =============================================================== Retina mode
+    // =============================================================== HD captures
 
-    private void OnRetinaChanged() => Dispatcher.InvokeAsync(RefreshRetinaUi, DispatcherPriority.Background);
+    private bool _hdSample;
 
-    protected override void OnActivated(EventArgs e)
+    private void OnHdChanged() => Dispatcher.InvokeAsync(RefreshHdUi, DispatcherPriority.Background);
+
+    /// <summary>README images: show the card as it looks once HD captures are set up.</summary>
+    internal void ShowHdForTest(bool on)
     {
-        base.OnActivated(e);
-        // back from the NVIDIA / AMD panel? show the new 2× modes straight away
-        if (SettingsPage.Visibility == Visibility.Visible) _ = App.Instance?.RefreshRetinaAsync();
+        _hdSample = true;
+        RenderHd(installed: on, enabled: on, busy: false, status: "", owns: false);
     }
 
-    private RetinaStatus? _retinaSample;
-
-    /// <summary>README images: show made-up monitors instead of the real ones.</summary>
-    internal void ShowRetinaForTest(RetinaStatus sample)
+    private void RefreshHdUi()
     {
-        _retinaSample = sample;
-        RenderRetina(sample, busy: false);
-    }
-
-    private void RefreshRetinaUi()
-    {
-        if (_retinaSample != null) return;
+        if (_hdSample) return;
         var app = App.Instance;
-        if (app is { HasRetinaState: false }) { _ = app.RefreshRetinaAsync(); return; } // comes back via RetinaChanged
-        RenderRetina(app?.RetinaState ?? Retina.Query(), app?.RetinaBusy == true);
+        if (app == null) return;
+        RenderHd(app.HdInstalled, _s.HdEnabled, app.HdBusy, app.HdStatus, app.HdInstalled && HdSetup.OwnsDriver);
     }
 
-    private void RenderRetina(RetinaStatus st, bool busy)
+    private void RenderHd(bool installed, bool enabled, bool busy, string status, bool owns)
     {
+        bool on = installed && enabled;
         _loadingSettings = true;
-        RetinaToggle.IsChecked = st.IsOn;
+        HdToggle.IsChecked = on || busy;
+        int scale = Math.Clamp(_s.HdScale, 2, 4);
+        Hd2.IsChecked = scale == 2;
+        Hd3.IsChecked = scale == 3;
+        Hd4.IsChecked = scale == 4;
         _loadingSettings = false;
-        RetinaToggle.IsEnabled = !busy && st.CanToggle;
+        HdToggle.IsEnabled = !busy;
+        HdQualityRow.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
 
-        RetinaMonitors.Children.Clear();
-        foreach (var d in st.Displays)
-        {
-            var sep = new Border();
-            sep.SetResourceReference(StyleProperty, "Card.Separator");
-            RetinaMonitors.Children.Add(sep);
-
-            var row = new Grid();
-            row.SetResourceReference(StyleProperty, "Card.Row");
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-            var icon = new IconView { Icon = "display", Width = 17, Height = 17, VerticalAlignment = VerticalAlignment.Center };
-            icon.SetResourceReference(IconView.ForegroundProperty, "Brush.TextSecondary");
-            row.Children.Add(icon);
-
-            var text = new StackPanel { Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-            text.Children.Add(new TextBlock { Text = d.Name, TextTrimming = TextTrimming.CharacterEllipsis });
-            var info = new TextBlock { Text = L.F("Retina.Monitor", d.Rect, $"{d.ScalePercent} %", d.Frequency) };
-            info.SetResourceReference(StyleProperty, "Text.Caption");
-            text.Children.Add(info);
-            Grid.SetColumn(text, 1);
-            row.Children.Add(text);
-
-            string detail = d.Detail.ToString("0.##");
-            var status = new TextBlock
-            {
-                Text = d.ScalePercent >= 200 ? $"Retina {detail}×"
-                    : d.CanDouble ? (d.ScalePercent == 100 ? L.T("Retina.Normal") : L.F("Retina.Scale", detail))
-                    : $"{L.F("Retina.Scale", detail)} · {L.T("Retina.NoModeShort")}",
-                VerticalAlignment = VerticalAlignment.Center,
-                FontWeight = d.ScalePercent >= 200 ? FontWeights.SemiBold : FontWeights.Normal,
-                Margin = new Thickness(12, 0, 0, 0),
-            };
-            status.SetResourceReference(TextBlock.ForegroundProperty, d.ScalePercent >= 200 ? "Brush.Accent" : "Brush.TextSecondary");
-            Grid.SetColumn(status, 2);
-            row.Children.Add(status);
-            RetinaMonitors.Children.Add(row);
-        }
-
-        bool needSetup = !st.CanToggle && !st.AllSharp;
-        RetinaSetup.Visibility = needSetup ? Visibility.Visible : Visibility.Collapsed;
-        if (needSetup)
-        {
-            (RetinaSetupText.Text, RetinaSetupButton.Content) = st.Vendor switch
-            {
-                "nvidia" => (L.T("Retina.SetupNvidia"), L.T("Retina.OpenNvidia")),
-                "amd" => (L.T("Retina.SetupAmd"), L.T("Retina.OpenAmd")),
-                _ => (L.T("Retina.SetupOther"), L.T("Retina.OpenDisplay")),
-            };
-            RetinaSetupButton.Tag = st.Vendor;
-        }
+        // one line under the switch: what is needed / what is happening / what went wrong
+        bool failed = !busy && !string.IsNullOrEmpty(status);
+        HdStatusText.Text = busy ? (string.IsNullOrEmpty(status) ? L.T("Hd.Status.Installing") : status)
+            : failed ? status
+            : on ? L.T("Hd.Status.Ready")
+            : L.T("Hd.Setup");
+        HdStatusText.SetResourceReference(TextBlock.ForegroundProperty, failed ? "Brush.Red" : "Brush.TextSecondary");
+        HdActionButton.Visibility = busy ? Visibility.Collapsed : Visibility.Visible;
+        bool remove = installed && owns;
+        HdActionButton.Content = L.T(remove ? "Hd.Remove" : "Hd.DriverPage");
+        HdActionButton.Tag = remove ? "remove" : "page";
     }
 
-    private async void RetinaToggle_Click(object sender, RoutedEventArgs e)
+    private async void HdToggle_Click(object sender, RoutedEventArgs e)
     {
         var app = App.Instance;
         if (app == null || _loadingSettings) return;
-        bool on = RetinaToggle.IsChecked == true;
-        RetinaToggle.IsEnabled = false;
-        await app.SetRetinaAsync(on);
-        RefreshRetinaUi();
+        bool on = HdToggle.IsChecked == true;
+        await app.SetHdAsync(on);
+        RefreshHdUi();
     }
 
-    private void RetinaSetup_Click(object sender, RoutedEventArgs e) => Retina.OpenDriverSettings(RetinaSetupButton.Tag as string ?? "other");
+    private void HdScale_Checked(object sender, RoutedEventArgs e)
+    {
+        if (_loadingSettings || sender is not RadioButton { Tag: string tag } || !int.TryParse(tag, out int n)) return;
+        _s.HdScale = n;
+        App.Instance?.SettingsChanged();
+    }
+
+    private async void HdAction_Click(object sender, RoutedEventArgs e)
+    {
+        if (HdActionButton.Tag as string == "remove")
+        {
+            if (App.Instance != null) await App.Instance.RemoveHdAsync();
+            RefreshHdUi();
+        }
+        else ShellUtil.Open(HdSetup.DriverPage);
+    }
 
     // =============================================================== updates
 

@@ -15,4 +15,8 @@ Notes
   terms of the GPL. LinearFrame's MIT-licensed source is GPL-compatible and is available in full in this repository,
   so the GPL's source-availability requirement is met. You may still reuse LinearFrame's own code under MIT.
 * `ffmpeg.exe` is a separate program that LinearFrame starts as a child process.
+* **HD captures** (optional, off by default) use the **Virtual Display Driver** by MikeTheTech and contributors
+  (MIT license, https://github.com/VirtualDrivers/Virtual-Display-Driver). It is *not* part of the download: when you
+  switch HD captures on, LinearFrame fetches the signed driver package from that project's GitHub release, checks it
+  against a pinned SHA-256 and installs it; Settings → HD captures removes it again.
 * The exact versions used for a release are listed in that release's notes.

@@ -19,13 +19,13 @@ SKRÓTY
 
 Zrzuty zapisują się w folderze Obrazy\LinearFrame i trafiają do schowka.
 
-TRYB RETINA (OSTRE ZRZUTY JAK NA MACU)
-  Ustawienia → Jakość zrzutów → Tryb Retina. Windows rysuje wtedy wszystko w 2× wyższej rozdzielczości (np. 3840×2160
-  ze skalowaniem 200 % na monitorze Full HD), a karta graficzna pokazuje to w tym samym rozmiarze. Zrzuty mają 2× więcej
-  prawdziwych pikseli w każdą stronę — bez powiększania i bez AI.
-  Wymaga jednorazowego włączenia DSR w Panelu sterowania NVIDIA (Zarządzaj ustawieniami 3D → DSR – Współczynniki → 4,00x
-  „starsze skalowanie”, DSR – Gładkość 0 %) albo Wirtualnej super rozdzielczości w AMD Software.
-  Na czas gier wyłączysz go w menu ikony w zasobniku.
+ZRZUTY HD (PRAWDZIWE 2–4×)
+  Ustawienia → Zrzuty HD → włącz. Przy zrzucie okno spod zaznaczenia trafia na ułamek sekundy na niewidoczny, wirtualny
+  ekran ze skalowaniem 200–400 %, aplikacja rysuje się tam naprawdę w większej rozdzielczości i to trafia do zrzutu.
+  Twój monitor i jego ustawienia nie są ruszane. Nic nie jest sztucznie powiększane — jeśli aplikacja nie umie narysować
+  się ostrzej (pulpit, pasek zadań, stare programy, wideo), dostajesz zwykły zrzut, a podgląd mówi dlaczego.
+  Włączenie instaluje raz mały, otwarty sterownik wirtualnego ekranu (Virtual Display Driver, MIT) — Windows poprosi
+  o potwierdzenie. Na pasku zrzutu przycisk „HD” (klawisz H) włącza i wyłącza HD dla danego zrzutu.
 
 ODTWARZACZ
   Przeciągnij film/muzykę na okno LinearFrame albo otwórz plik przez „Otwórz za pomocą”.
@@ -41,10 +41,10 @@ FOLDER „engine”
   libmpv-2.dll (silnik odtwarzania) i ffmpeg.exe (przycinanie) — nie usuwaj go.
 
 ODINSTALOWANIE
-  W Ustawieniach wyłącz „Uruchamiaj razem z Windows” (i tryb Retina, jeśli go używasz), zakończ aplikację
+  W Ustawieniach wyłącz „Uruchamiaj razem z Windows” (a w „Zrzuty HD” kliknij „Usuń sterownik”, jeśli go instalowałeś), zakończ aplikację
   (ikonka w zasobniku → Zakończ), usuń folder i skrót „LinearFrame” z menu Start. Ustawienia są w %APPDATA%\LinearFrame.
 
 -------------------------------------------------------------------------------------------------
 LinearFrame — screenshots & video, simply.  Unzip, run LinearFrame.exe.  Ctrl+Shift+4 = capture (any key or mouse button
-can be set in Settings).  Settings → Screenshot quality → Retina mode = Mac-sharp 2× screenshots (needs NVIDIA DSR / AMD VSR).
+can be set in Settings).  Settings → HD captures = selections really re-rendered at 2–4× on an invisible virtual screen.
 Updates install themselves.  Open source (MIT): https://github.com/striktooo/LinearFrame

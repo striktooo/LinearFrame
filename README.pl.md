@@ -38,16 +38,21 @@ Naciskasz **Ctrl + Shift + 4**: ekran zamarza i lekko przyciemnia się. **Przeci
 - Rozmiar wybierasz od razu na pasku: **Oryginał, Full HD, 2K, 4K albo 8K**.
 - Wiele monitorów i różne skalowania (DPI); prawdziwe, fizyczne piksele. Strzałkami przesuwasz zaznaczenie co piksel.
 
-### ✨ Tryb Retina — zrzuty ostre jak na Macu, na każdym monitorze
-Na Macu nawet mały przycisk wychodzi na zrzucie ostro, bo macOS rysuje wszystko w **2×** (Retina). LinearFrame przełącza Windows
-dokładnie w to samo jednym kliknięciem (*Ustawienia → Jakość zrzutów*): pulpit renderuje się w dwa razy wyższej rozdzielczości —
-np. 3840×2160 ze skalowaniem 200 % na monitorze 1920×1080 — a karta graficzna zmniejsza obraz do Twojego monitora, więc wszystko
-zostaje tej samej wielkości. Każda aplikacja rysuje teraz tekst, ikony i wektorowy interfejs czterokrotnie większą liczbą
-prawdziwych pikseli, a każdy zrzut ma te szczegóły. **Prawdziwe renderowanie — bez powiększania i bez AI.**
+### ✨ Zrzuty HD — naprawdę wyrenderowane nawet w 4×, nigdy powiększane
+Zwykły zrzut zawiera dokładnie te piksele, które są na ekranie — po przybliżeniu małego przycisku widać kwadraty.
+Z włączonymi **zrzutami HD** LinearFrame renderuje zaznaczenie od nowa: okno spod zaznaczenia trafia na ułamek sekundy na
+niewidoczny, *wirtualny ekran* ze skalowaniem 200–400 %. Windows każe wtedy aplikacji narysować się dla tego skalowania —
+dokładnie tak, jak po przeciągnięciu okna na monitor 4K albo 8K — LinearFrame zapisuje ten obraz i odstawia okno na miejsce.
+Wszystko to zasłania zamrożona nakładka; Twój prawdziwy monitor, jego rozdzielczość i skalowanie nie są ruszane.
 
-Potrzebny jest NVIDIA DSR (4,00x, starsze skalowanie) albo AMD Virtual Super Resolution — aplikacja podpowie, gdzie to włączyć.
-Ułożenie monitorów zostaje zachowane, a okienko „Zostawić?” samo wszystko cofa po 15 sekundach. Szybkie przełączanie w menu ikony
-w zasobniku (np. wyłączenie na czas gier).
+- Tekst, ikony i wektorowy interfejs wychodzą w **2×, 3× albo 4× większej liczbie pikseli na bok**, narysowane przez samą
+  aplikację. Bez AI i bez powiększania.
+- Uczciwie: LinearFrame sprawdza, czy nowy obraz pokazuje to samo *i* czy naprawdę ma więcej szczegółów. Tam, gdzie
+  aplikacja tego nie potrafi (pulpit i pasek zadań, stare programy bez obsługi HiDPI, klatki wideo), dostajesz zwykły zrzut,
+  a podgląd mówi dlaczego.
+- Jednorazowe włączenie w *Ustawienia → Zrzuty HD*: mały, otwarty sterownik wirtualnego ekranu
+  ([Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver), MIT) jest pobierany, sprawdzany
+  i instalowany — Windows prosi o potwierdzenie. Wirtualny ekran jest podłączany tylko na czas renderowania zrzutu.
 
 ### ✏️ Adnotacje i kadr, który rośnie
 ![Edytor](docs/images/editor.png)
@@ -84,7 +89,8 @@ strumienie są kopiowane bit w bit, więc nawet film 4 GB jest gotowy w kilka se
 
 LinearFrame siedzi w zasobniku i zużywa **0 % CPU**. Nowe wersje pobierają się w tle, są sprawdzane (SHA-256) i instalują się
 **wtedy, gdy nie korzystasz z aplikacji** — bez instalatora, bez uprawnień administratora i bez żadnego serwera: aktualizacje
-przychodzą prosto z zakładki Releases tego repozytorium.
+przychodzą prosto z zakładki Releases tego repozytorium. Aktualizacja pobiera tylko samą aplikację (ok. 55 MB); silnik wideo
+jest pobierany ponownie tylko wtedy, gdy naprawdę się zmienił.
 
 ---
 
@@ -148,16 +154,22 @@ flowchart LR
 </details>
 
 <details>
-<summary><b>Tryb Retina</b></summary>
+<summary><b>Zrzuty HD</b></summary>
 
-- Monitory, ich natywna rozdzielczość i bieżące skalowanie pochodzą z API CCD (`QueryDisplayConfig`, `DisplayConfigGetDeviceInfo`);
-  tryb 2× jest szukany na liście trybów sterownika (tam pojawiają się tryby DSR / VSR).
-- Każdy nowy tryb jest najpierw sprawdzany przez `CDS_TEST`, potem wszystkie monitory są przygotowywane z `CDS_NORESET`
-  i przełączane naraz. Pozycje monitorów są przeliczane tak, żeby stykające się ekrany dalej stykały się tym samym bokiem
-  (główny zostaje w 0,0); układów, których nie da się zachować, aplikacja nie zgaduje — po prostu odmawia.
-- Skalowanie ustawiane jest dla każdego monitora przez `DisplayConfigSetDeviceInfo` — tym samym wywołaniem, którego używają
-  Ustawienia Windows — więc 100 % zmienia się w 200 %, 125 % w 250 %… i nic na ekranie nie zmienia wielkości.
-- Poprzednie tryby są zapamiętywane; wyłączenie (albo brak potwierdzenia w 15 s) przywraca je dokładnie.
+- Płótnem jest wirtualny monitor (IddCx) z otwartego sterownika Virtual Display Driver. W spoczynku jest odłączony od
+  pulpitu (`ChangeDisplaySettingsEx` z zerowym rozmiarem); na czas zrzutu podłączany w 3840×2160 … 7680×4320 ze skalowaniem
+  200–400 % (`DisplayConfigSetDeviceInfo` — to samo wywołanie, którego używają Ustawienia Windows). Po instalacji bez uprawnień administratora.
+- Okno, do którego należy zaznaczenie, pochodzi z listy okien zapamiętanej w chwili zamrożenia ekranu. Jest przenoszone przez
+  `SetWindowPos(SWP_ASYNCWINDOWPOS)`; Windows wysyła mu `WM_DPICHANGED`, aplikacja układa się w tym samym rozmiarze logicznym
+  z N× większą liczbą pikseli, a potem okno wraca dokładnie w ten sam prostokąt.
+- Wirtualny ekran jest czytany przez `BitBlt`, aż obraz się ustabilizuje, a potem sprawdzany względem zamrożonego zrzutu 1×:
+  dopasowanie położenia (najlepsze przesunięcie w ±14 px na rozmytej skali szarości), podobieństwo struktury (znormalizowana
+  korelacja) i test *zysku szczegółów* — prawdziwy render N× ma około N razy więcej energii krawędzi niż ten sam obraz
+  jedynie rozciągnięty (zmierzone: 3,8 dla prawdziwego 4×, 0,75 dla rozciągniętego). Rozciągnięta albo zmieniona treść jest
+  odrzucana i używany jest zwykły zrzut — wynik nigdy nie jest rozmytym powiększeniem.
+- Duże zaznaczenia renderowane są w mniejszej krotności (całe okno w 4× to obraz 30 megapikseli).
+- Instalacja: paczka sterownika pochodzi z jego wydania na GitHubie, jest sprawdzana przypiętą sumą SHA-256 i instalowana
+  przez podniesioną kopię aplikacji przez SetupAPI (to samo, co robi `devcon install`).
 </details>
 
 <details>

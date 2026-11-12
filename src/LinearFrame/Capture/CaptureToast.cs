@@ -30,14 +30,16 @@ public sealed class CaptureToast : Window
     private bool _pressed, _closing;
     private IntPtr _hwnd;
 
-    public static void Show(BitmapSource image, string? path, MonitorInfo monitor)
+    /// <param name="badge">small label on the preview: "HD 4×", or why the capture stayed a normal one</param>
+    /// <param name="badgeGood">true = accent colour (HD worked), false = neutral note</param>
+    public static void Show(BitmapSource image, string? path, MonitorInfo monitor, string? badge = null, bool badgeGood = false)
     {
         _current?.Dismiss(fast: true);
-        _current = new CaptureToast(image, path, monitor);
+        _current = new CaptureToast(image, path, monitor, badge, badgeGood);
         _current.Show();
     }
 
-    private CaptureToast(BitmapSource image, string? path, MonitorInfo monitor)
+    private CaptureToast(BitmapSource image, string? path, MonitorInfo monitor, string? badge, bool badgeGood)
     {
         _image = image;
         _path = path;
@@ -87,6 +89,31 @@ public sealed class CaptureToast : Window
 
         var inner = new Grid();
         inner.Children.Add(img);
+        if (!string.IsNullOrEmpty(badge))
+        {
+            // a failed HD attempt gets a wider preview, so the reason fits in one or two lines
+            if (!badgeGood && w < 190) { w = 190; img.Width = w; }
+            inner.Children.Add(new Border
+            {
+                Background = new SolidColorBrush(badgeGood ? Color.FromArgb(0xE6, 0x0A, 0x84, 0xFF) : Color.FromArgb(0xE0, 0x1F, 0x1F, 0x22)),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(7, 2, 7, 3),
+                Margin = new Thickness(6),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                MaxWidth = w - 12,
+                IsHitTestVisible = false,
+                Child = new TextBlock
+                {
+                    Text = badge,
+                    Foreground = Brushes.White,
+                    FontSize = badgeGood ? 11.5 : 11,
+                    FontWeight = badgeGood ? FontWeights.Bold : FontWeights.Normal,
+                    TextWrapping = TextWrapping.Wrap,
+                    FontFamily = (FontFamily)Application.Current.FindResource("Font.UI"),
+                },
+            });
+        }
         inner.Children.Add(_hoverLayer);
 
         var card = new Border

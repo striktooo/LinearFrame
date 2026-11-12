@@ -47,3 +47,21 @@ Compress-Archive -Path $app -DestinationPath $zip -CompressionLevel Optimal
 $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
 Set-Content "$zip.sha256" "$hash  $(Split-Path -Leaf $zip)"
 Write-Host ("Done: {0} ({1:N1} MB)  SHA256 {2}" -f $zip, ((Get-Item $zip).Length / 1MB), $hash)
+
+# The small update package: everything except the engine folder (mpv + FFmpeg hardly ever change, and they are 60 % of
+# the download). Its .sha256 also lists the engine files this version expects - an installed copy whose engine matches
+# takes this package, any other one takes the full ZIP above.
+$upd = Join-Path $dist "LinearFrame-$version-update.zip"
+if (Test-Path $upd) { Remove-Item -Force $upd }
+$stage = Join-Path $dist 'update-stage'
+if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+New-Item -ItemType Directory -Force (Join-Path $stage 'LinearFrame') | Out-Null
+Get-ChildItem $app -File | Copy-Item -Destination (Join-Path $stage 'LinearFrame')
+Compress-Archive -Path (Join-Path $stage 'LinearFrame') -DestinationPath $upd -CompressionLevel Optimal
+Remove-Item -Recurse -Force $stage
+$lines = @("$((Get-FileHash $upd -Algorithm SHA256).Hash)  $(Split-Path -Leaf $upd)")
+foreach ($f in Get-ChildItem (Join-Path $app 'engine') -File | Sort-Object Name) {
+    $lines += "$((Get-FileHash $f.FullName -Algorithm SHA256).Hash)  engine/$($f.Name)"
+}
+Set-Content "$upd.sha256" $lines
+Write-Host ("Update package: {0} ({1:N1} MB)" -f $upd, ((Get-Item $upd).Length / 1MB))

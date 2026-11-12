@@ -39,16 +39,20 @@ A floating thumbnail slides into the corner — click it to edit, drag it straig
 - Pick the output size right in the toolbar: **Original, Full HD, 2K, 4K or 8K**.
 - Multi-monitor and per-monitor-DPI aware; captures real physical pixels. Arrow keys nudge the selection pixel by pixel.
 
-### ✨ Retina mode — Mac-sharp screenshots on any monitor
-A small button screenshots crisp on a Mac because macOS draws everything at **2×** (Retina). LinearFrame switches Windows into
-exactly that with one click (*Settings → Screenshot quality*): the desktop renders at twice the resolution — e.g. 3840×2160 at
-200 % scaling on a 1920×1080 monitor — and the graphics card scales it down to your panel, so everything keeps its size.
-Every app now draws its text, icons and vector UI with four times as many real pixels, and every screenshot carries that detail.
-**Real rendering — no upscaling, no AI.**
+### ✨ HD captures — really rendered at up to 4×, never upscaled
+A screenshot normally holds exactly the pixels that are on your screen — zoom in on a small button and you see squares.
+With **HD captures** on, LinearFrame re-renders what you selected instead: the window under the selection is moved for a
+split second onto an invisible *virtual screen* that runs at 200–400 % scaling. Windows then tells the app to draw itself
+for that scaling — exactly what happens when you drag a window onto a 4K or 8K monitor — LinearFrame captures that picture
+and puts the window back. The frozen overlay hides all of it; your real monitor, its resolution and its scaling are never touched.
 
-Needs NVIDIA DSR (4.00x, legacy scaling) or AMD Virtual Super Resolution; the app tells you where to switch it on. Your monitor
-arrangement is kept, and a *"Keep?"* prompt reverts everything by itself after 15 seconds. Quick toggle in the tray menu
-(e.g. off for games).
+- Text, icons and vector UI come out with **2×, 3× or 4× the pixels per side**, drawn by the app itself. No AI, no upscaling.
+- Honest by design: LinearFrame checks that the new picture shows the same content *and* really carries more detail. Where an
+  app can't do that (the desktop and taskbar, old apps without high-DPI support, video frames) you get the normal screenshot,
+  and the preview says why.
+- One-time set-up in *Settings → HD captures*: a small open-source driver for the virtual screen
+  ([Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver), MIT) is downloaded, verified and
+  installed — Windows asks you to confirm. The virtual screen is only attached while a capture is being rendered.
 
 ### ✏️ Markup — and frames that grow
 ![Editor](docs/images/editor.png)
@@ -85,6 +89,7 @@ Nothing is re-encoded: streams are copied bit for bit, so a 4 GB video is done i
 
 LinearFrame lives in the tray at **0 % CPU**. New versions download in the background, are verified (SHA-256) and installed
 **while you're not using the app** — no installer, no admin rights, no server: updates come straight from this repository's Releases.
+An update only downloads the app itself (about 55 MB); the video engine is fetched again only when it actually changed.
 
 ---
 
@@ -146,16 +151,22 @@ flowchart LR
 </details>
 
 <details>
-<summary><b>Retina mode</b></summary>
+<summary><b>HD captures</b></summary>
 
-- Monitors, their native panel resolution and current scaling come from the CCD API (`QueryDisplayConfig`,
-  `DisplayConfigGetDeviceInfo`); the 2× desktop mode is looked up in the driver's mode list (that's where DSR / VSR modes appear).
-- Every new mode is validated with `CDS_TEST` first, then all monitors are staged with `CDS_NORESET` and switched in one go.
-  Monitor positions are recomputed so that screens that touched still touch on the same side (the primary stays at 0,0);
-  layouts that can't be kept are refused instead of guessed.
-- Scaling is set per monitor through `DisplayConfigSetDeviceInfo` — the same call the Windows Settings app uses —
-  so 100 % becomes 200 %, 125 % becomes 250 %… and nothing changes size on screen.
-- The previous modes are saved; switching off (or not confirming within 15 s) restores them exactly.
+- The canvas is an indirect-display (IddCx) virtual monitor from the open-source Virtual Display Driver. While idle it is
+  detached from the desktop (`ChangeDisplaySettingsEx` with a zero size); for a capture it is attached at 3840×2160 … 7680×4320
+  with 200–400 % scaling (`DisplayConfigSetDeviceInfo`, the call the Settings app itself uses). No admin rights after set-up.
+- The window that owns the selection comes from the z-order snapshot taken when the screen was frozen. It is moved with
+  `SetWindowPos(SWP_ASYNCWINDOWPOS)`; Windows sends it `WM_DPICHANGED`, the app lays itself out at the same logical size with
+  N× the pixels, and afterwards it is put back into the exact rectangle it came from.
+- The virtual screen is read with `BitBlt` until the picture is stable, then verified against the frozen 1× capture:
+  registration (best offset within ±14 px on blurred greyscale), structural similarity (zero-mean normalised correlation)
+  and a *detail gain* test — a real N× render has about N times the edge energy of the same picture merely stretched
+  (measured: 3.8 for a real 4× render, 0.75 for a stretched one). Stretched or changed content is rejected and the normal
+  capture is used, so the result is never a blurry enlargement.
+- Big selections are rendered at a lower factor (a whole window at 4× would be a 30-megapixel picture).
+- Set-up: the driver ZIP comes from its GitHub release, is checked against a pinned SHA-256 and installed by an elevated
+  copy of the app through SetupAPI (what `devcon install` does).
 </details>
 
 <details>

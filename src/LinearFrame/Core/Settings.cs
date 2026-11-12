@@ -93,18 +93,6 @@ public sealed class HotkeyGesture
     public HotkeyGesture Clone() => new() { Modifiers = Modifiers, Key = Key, Mouse = Mouse };
 }
 
-/// <summary>One monitor's mode before Retina mode was switched on, so it can be put back exactly.</summary>
-public sealed class SavedDisplay
-{
-    public string Device { get; set; } = "";
-    public int Width { get; set; }
-    public int Height { get; set; }
-    public int Frequency { get; set; }
-    public int X { get; set; }
-    public int Y { get; set; }
-    public int ScalePercent { get; set; }
-}
-
 public sealed class AppSettings
 {
     public string Language { get; set; } = "auto";              // auto | pl | en
@@ -123,10 +111,16 @@ public sealed class AppSettings
     public bool PlaySound { get; set; } = true;
     public bool RunAtStartup { get; set; } = true;
     public bool FirstRunDone { get; set; }
+    /// <summary>The main window has been seen once - after that a tray start never opens it by itself.</summary>
+    public bool WelcomeAutoShown { get; set; }
     public bool StartMenuShortcutDone { get; set; }
 
-    /// <summary>Monitor modes from before Retina mode was switched on (null while it's off).</summary>
-    public List<SavedDisplay>? RetinaRestore { get; set; }
+    /// <summary>HD captures are set up (the virtual screen is installed) and may be used.</summary>
+    public bool HdEnabled { get; set; }
+    /// <summary>How many times more pixels per side an HD capture is rendered with: 2, 3 or 4.</summary>
+    public int HdScale { get; set; } = 4;
+    /// <summary>The "HD" switch in the capture toolbar (remembered).</summary>
+    public bool HdCapture { get; set; } = true;
 
     public bool AutoUpdate { get; set; } = true;
     public DateTime? LastUpdateCheckUtc { get; set; }

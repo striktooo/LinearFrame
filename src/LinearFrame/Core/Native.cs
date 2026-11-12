@@ -167,6 +167,10 @@ internal static class Native
     [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr CreateIconFromResourceEx(byte[] bits, uint size, bool icon, uint ver, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
     [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
+    [DllImport("user32.dll")] public static extern IntPtr GetWindowDpiAwarenessContext(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern int GetAwarenessFromDpiAwarenessContext(IntPtr context);
+    [DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern IntPtr MonitorFromRect(ref RECT rect, uint flags);
 
     public const uint MONITOR_DEFAULTTONEAREST = 2;
     public const int SM_CXSMICON = 49, SM_CYSMICON = 50, SM_CXDRAG = 68, SM_CYDRAG = 69;

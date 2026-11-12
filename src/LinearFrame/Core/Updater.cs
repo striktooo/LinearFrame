@@ -5,12 +5,20 @@ using System.Text.Json;
 
 namespace LinearFrame.Core;
 
-public sealed record UpdateInfo(Version Version, string Tag, string Notes, string ZipUrl, string? ShaUrl, long Size, string PageUrl);
+public sealed record UpdateInfo(Version Version, string Tag, string Notes, string ZipUrl, string? ShaUrl, long Size, string PageUrl)
+{
+    /// <summary>The small package without the engine folder (and its checksum list), if the release has one.</summary>
+    public string? SmallZipUrl { get; init; }
+    public string? SmallShaUrl { get; init; }
+    public long SmallSize { get; init; }
+}
 
 /// <summary>
 /// Self-update from GitHub Releases - no server of our own needed.
-/// 1) ask the GitHub API for the latest release, 2) download the win-x64 ZIP and verify its SHA-256,
-/// 3) swap the files next to the running exe (Windows lets you rename a running exe/DLL), 4) restart.
+/// 1) ask the GitHub API for the latest release, 2) download the package and verify its SHA-256 - the small
+/// "-update.zip" (no engine folder, ~40 % of the size) when the installed mpv/FFmpeg are still the right ones,
+/// otherwise the full win-x64 ZIP, 3) swap the files next to the running exe (Windows lets you rename a running
+/// exe/DLL), 4) restart.
 /// </summary>
 internal static class Updater
 {
@@ -58,18 +66,17 @@ internal static class Updater
         ver = Normalize(ver);
         if (ver <= Current) return null;
 
-        string? zip = null, sha = null;
-        long size = 0;
+        string? zip = null, sha = null, smallZip = null, smallSha = null;
+        long size = 0, smallSize = 0;
         foreach (var a in root.GetProperty("assets").EnumerateArray())
         {
             var name = a.GetProperty("name").GetString() ?? "";
             var url = a.GetProperty("browser_download_url").GetString() ?? "";
-            if (name.EndsWith("-win-x64.zip", StringComparison.OrdinalIgnoreCase))
-            {
-                zip = url;
-                size = a.TryGetProperty("size", out var sz) ? sz.GetInt64() : 0;
-            }
+            long bytes = a.TryGetProperty("size", out var sz) ? sz.GetInt64() : 0;
+            if (name.EndsWith("-win-x64.zip", StringComparison.OrdinalIgnoreCase)) { zip = url; size = bytes; }
             else if (name.EndsWith("-win-x64.zip.sha256", StringComparison.OrdinalIgnoreCase)) sha = url;
+            else if (name.EndsWith("-update.zip", StringComparison.OrdinalIgnoreCase)) { smallZip = url; smallSize = bytes; }
+            else if (name.EndsWith("-update.zip.sha256", StringComparison.OrdinalIgnoreCase)) smallSha = url;
         }
         if (zip == null) return null;
         if (!Trusted(zip) || (sha != null && !Trusted(sha)))
@@ -77,23 +84,75 @@ internal static class Updater
             Log.Warn("Update asset from an unexpected location ignored");
             return null;
         }
+        // the small package only counts with its checksum list, and only from the same trusted place
+        if (smallZip == null || smallSha == null || !Trusted(smallZip) || !Trusted(smallSha)) { smallZip = null; smallSha = null; }
         string notes = root.TryGetProperty("body", out var b) ? b.GetString() ?? "" : "";
         string page = root.TryGetProperty("html_url", out var h) ? h.GetString() ?? ReleasesPage : ReleasesPage;
-        return new UpdateInfo(ver, tag, notes, zip, sha, size, page);
+        return new UpdateInfo(ver, tag, notes, zip, sha, size, page) { SmallZipUrl = smallZip, SmallShaUrl = smallSha, SmallSize = smallSize };
     }
 
-    /// <summary>Downloads the release ZIP and checks its SHA-256. Returns the local path.</summary>
+    private static async Task<string> ReadTextAsync(string url, CancellationToken ct) =>
+        IsLocal(url) ? await File.ReadAllTextAsync(url, ct) : await Http.GetStringAsync(url, ct);
+
+    /// <summary>
+    /// Reads the small package's checksum list ("hash  name" per line; the first line is the ZIP itself, the others the
+    /// engine files this version needs) and checks the installed engine against it. Returns the ZIP's hash if the small
+    /// package can be used, otherwise null.
+    /// </summary>
+    internal static async Task<string?> SmallPackageHashAsync(string listText, string appDir, CancellationToken ct)
+    {
+        string? zipHash = null;
+        foreach (var raw in listText.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var parts = raw.Split(new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length != 2 || parts[0].Length != 64) return null;
+            if (zipHash == null) { zipHash = parts[0]; continue; }
+            string rel = parts[1].Replace('/', Path.DirectorySeparatorChar);
+            if (!rel.StartsWith("engine" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || rel.Contains("..")) return null;
+            string local = Path.Combine(appDir, rel);
+            if (!File.Exists(local)) return null;
+            string actual;
+            await using (var fs = File.OpenRead(local)) actual = Convert.ToHexString(await SHA256.HashDataAsync(fs, ct));
+            if (!actual.Equals(parts[0], StringComparison.OrdinalIgnoreCase)) return null; // a different mpv / FFmpeg build
+        }
+        return zipHash;
+    }
+
+    /// <summary>Downloads the update (the small package when the installed engine allows it) and checks its SHA-256. Returns the local path.</summary>
     public static async Task<string> DownloadAsync(UpdateInfo u, IProgress<double>? progress, CancellationToken ct)
     {
         Directory.CreateDirectory(UpdatesDir);
-        var zipPath = Path.Combine(UpdatesDir, $"LinearFrame-{u.Version}-win-x64.zip");
+        if (u.SmallZipUrl != null && u.SmallShaUrl != null)
+        {
+            try
+            {
+                string? hash = await SmallPackageHashAsync(await ReadTextAsync(u.SmallShaUrl, ct), AppPaths.BaseDir, ct);
+                if (hash != null)
+                {
+                    var path = await FetchAsync(u.SmallZipUrl, u.SmallSize, Path.Combine(UpdatesDir, $"LinearFrame-{u.Version}-update.zip"), hash, progress, ct);
+                    Log.Info($"Update {u.Version}: small package ({new FileInfo(path).Length / 1048576} MB, engine unchanged)");
+                    return path;
+                }
+                Log.Info($"Update {u.Version}: the engine changed - taking the full package");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { Log.Warn("Small update package failed, taking the full one: " + ex.Message); }
+        }
+        string? expected = null;
+        if (u.ShaUrl != null)
+            expected = (await ReadTextAsync(u.ShaUrl, ct)).Trim().Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0];
+        return await FetchAsync(u.ZipUrl, u.Size, Path.Combine(UpdatesDir, $"LinearFrame-{u.Version}-win-x64.zip"), expected, progress, ct);
+    }
+
+    private static async Task<string> FetchAsync(string url, long size, string zipPath, string? expectedSha, IProgress<double>? progress, CancellationToken ct)
+    {
         var part = zipPath + ".part";
-        if (IsLocal(u.ZipUrl)) File.Copy(u.ZipUrl, part, true);
+        if (IsLocal(url)) File.Copy(url, part, true);
         else
         {
-            using var resp = await Http.GetAsync(u.ZipUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+            using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
             resp.EnsureSuccessStatusCode();
-            long total = resp.Content.Headers.ContentLength ?? u.Size;
+            long total = resp.Content.Headers.ContentLength ?? size;
             await using var src = await resp.Content.ReadAsStreamAsync(ct);
             await using var dst = File.Create(part);
             var buf = new byte[1 << 16];
@@ -107,13 +166,11 @@ internal static class Updater
             }
         }
 
-        if (u.ShaUrl != null)
+        if (expectedSha != null)
         {
-            string shaText = IsLocal(u.ShaUrl) ? await File.ReadAllTextAsync(u.ShaUrl, ct) : await Http.GetStringAsync(u.ShaUrl, ct);
-            string expected = shaText.Trim().Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0];
             string actual;
             await using (var fs = File.OpenRead(part)) actual = Convert.ToHexString(await SHA256.HashDataAsync(fs, ct));
-            if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
+            if (!actual.Equals(expectedSha, StringComparison.OrdinalIgnoreCase))
             {
                 File.Delete(part);
                 throw new InvalidDataException("Update checksum mismatch");
@@ -122,6 +179,7 @@ internal static class Updater
         File.Move(part, zipPath, true);
         return zipPath;
     }
+
 
     /// <summary>Extracts the ZIP and returns the folder holding the new LinearFrame.exe.</summary>
     public static string Extract(string zipPath, Version v)
@@ -132,7 +190,8 @@ internal static class Updater
         var exe = Directory.EnumerateFiles(dest, "LinearFrame.exe", SearchOption.AllDirectories).FirstOrDefault()
                   ?? throw new InvalidDataException("LinearFrame.exe missing in the update");
         var root = Path.GetDirectoryName(exe)!;
-        if (!File.Exists(Path.Combine(root, "engine", "libmpv-2.dll"))) throw new InvalidDataException("engine folder missing in the update");
+        bool small = zipPath.EndsWith("-update.zip", StringComparison.OrdinalIgnoreCase); // no engine folder by design
+        if (!small && !File.Exists(Path.Combine(root, "engine", "libmpv-2.dll"))) throw new InvalidDataException("engine folder missing in the update");
         return root;
     }
 

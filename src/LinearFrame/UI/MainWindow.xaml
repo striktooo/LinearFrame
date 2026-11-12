@@ -219,34 +219,46 @@
                                 Click="KeyboardSettings_Click" Margin="12,0,0,0" Padding="12,4" VerticalAlignment="Center" Visibility="Collapsed"/>
                     </Grid>
 
-                    <!-- Screenshot quality: Retina mode -->
-                    <TextBlock Text="{core:Loc Settings.Quality}" Style="{StaticResource Text.Headline}" Margin="4,24,0,8"/>
+                    <!-- HD captures: real re-rendering on an off-screen virtual screen -->
+                    <TextBlock Text="{core:Loc Settings.Hd}" Style="{StaticResource Text.Headline}" Margin="4,24,0,8"/>
                     <Border Style="{StaticResource Card}">
                         <StackPanel>
                             <Grid Style="{StaticResource Card.Row}">
                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                     <ui:IconView Icon="sparkle" Width="17" Height="17" Foreground="{DynamicResource Brush.Accent}"/>
-                                    <TextBlock Text="{core:Loc Retina.Title}" Margin="10,0,0,0" VerticalAlignment="Center" FontWeight="Medium"/>
+                                    <TextBlock Text="{core:Loc Hd.Title}" Margin="10,0,0,0" VerticalAlignment="Center" FontWeight="Medium"/>
                                 </StackPanel>
-                                <CheckBox x:Name="RetinaToggle" Style="{StaticResource Toggle.Switch}" HorizontalAlignment="Right" Click="RetinaToggle_Click"/>
+                                <CheckBox x:Name="HdToggle" Style="{StaticResource Toggle.Switch}" HorizontalAlignment="Right" Click="HdToggle_Click"/>
                             </Grid>
-                            <StackPanel x:Name="RetinaMonitors"/>
-                            <StackPanel x:Name="RetinaSetup" Visibility="Collapsed">
+                            <StackPanel x:Name="HdQualityRow">
+                                <Border Style="{StaticResource Card.Separator}"/>
+                                <Grid Style="{StaticResource Card.Row}">
+                                    <TextBlock Text="{core:Loc Hd.Quality}" VerticalAlignment="Center"/>
+                                    <Border Style="{StaticResource Segment.Container}" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                        <StackPanel Orientation="Horizontal">
+                                            <RadioButton x:Name="Hd2" Style="{StaticResource Segment.Item}" GroupName="hd" Content="2×" Tag="2" Checked="HdScale_Checked"/>
+                                            <RadioButton x:Name="Hd3" Style="{StaticResource Segment.Item}" GroupName="hd" Content="3×" Tag="3" Checked="HdScale_Checked"/>
+                                            <RadioButton x:Name="Hd4" Style="{StaticResource Segment.Item}" GroupName="hd" Content="4×" Tag="4" Checked="HdScale_Checked"/>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+                            </StackPanel>
+                            <StackPanel x:Name="HdStatusRow">
                                 <Border Style="{StaticResource Card.Separator}"/>
                                 <Grid Style="{StaticResource Card.Row}" Margin="16,11,16,12">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock x:Name="RetinaSetupText" Style="{StaticResource Text.Caption}" FontSize="12.5" TextWrapping="Wrap" TextTrimming="None"
+                                    <TextBlock x:Name="HdStatusText" Style="{StaticResource Text.Caption}" FontSize="12.5" TextWrapping="Wrap" TextTrimming="None"
                                                Margin="0,0,14,0" VerticalAlignment="Center"/>
-                                    <Button x:Name="RetinaSetupButton" Grid.Column="1" Style="{StaticResource Btn.Secondary}" Click="RetinaSetup_Click"
+                                    <Button x:Name="HdActionButton" Grid.Column="1" Style="{StaticResource Btn.Secondary}" Click="HdAction_Click"
                                             VerticalAlignment="Center" Padding="12,5"/>
                                 </Grid>
                             </StackPanel>
                         </StackPanel>
                     </Border>
-                    <TextBlock Text="{core:Loc Retina.Hint}" Style="{StaticResource Text.Caption}" TextWrapping="Wrap" TextTrimming="None" Margin="4,7,0,0"/>
+                    <TextBlock Text="{core:Loc Hd.Hint}" Style="{StaticResource Text.Caption}" TextWrapping="Wrap" TextTrimming="None" Margin="4,7,0,0"/>
 
                     <!-- Saving -->
                     <TextBlock Text="{core:Loc Settings.Saving}" Style="{StaticResource Text.Headline}" Margin="4,24,0,8"/>

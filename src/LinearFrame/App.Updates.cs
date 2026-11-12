@@ -171,6 +171,7 @@ public partial class App
 
         // hand the single-instance lock, tray icon and hotkeys over to the new process
         _hotkeys?.UnregisterAll();
+        VirtualScreen.Park();
         _tray?.Dispose();
         _tray = null;
         try { _mutex?.ReleaseMutex(); } catch { /* not owned */ }

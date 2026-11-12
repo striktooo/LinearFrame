@@ -21,7 +21,9 @@ git push origin v1.0.1
 GitHub Actions (plik `.github/workflows/release.yml`) sam:
 1. pobierze libmpv i FFmpeg,
 2. zbuduje `LinearFrame.exe` w wersji z tagu (np. 1.0.1),
-3. spakuje `LinearFrame-1.0.1-win-x64.zip` + `.sha256` i opublikuje je w **Releases**.
+3. spakuje `LinearFrame-1.0.1-win-x64.zip` (pełna paczka dla nowych osób) i `LinearFrame-1.0.1-update.zip` (mała paczka
+   bez folderu `engine` — zainstalowane kopie pobierają ją zamiast pełnej, gdy mpv/FFmpeg się nie zmieniły), obie z plikiem
+   `.sha256`, i opublikuje je w **Releases**.
 
 Postęp zobaczysz w zakładce **Actions** (ok. 5–10 minut). Numer wersji w `LinearFrame.csproj` nie musi być ręcznie zmieniany —
 workflow bierze go z tagu.
@@ -33,10 +35,11 @@ workflow bierze go z tagu.
 
 ```powershell
 pwsh .\build.ps1 -UseLocalFfmpeg
-gh release create v1.0.1 dist\LinearFrame-1.0.1-win-x64.zip dist\LinearFrame-1.0.1-win-x64.zip.sha256 --title "LinearFrame 1.0.1" --notes "Co nowego…"
+gh release create v1.0.1 (Get-ChildItem dist\LinearFrame-1.0.1-*).FullName --title "LinearFrame 1.0.1" --notes "Co nowego…"
 ```
-(najpierw podnieś `<Version>` w `src/LinearFrame/LinearFrame.csproj`, żeby exe znało swój numer). Plik `.sha256` jest
-potrzebny — aktualizator sprawdza nim, czy pobrany ZIP nie został uszkodzony.
+(najpierw podnieś `<Version>` w `src/LinearFrame/LinearFrame.csproj`, żeby exe znało swój numer). Do wydania trafiają cztery
+pliki: pełny ZIP, mały ZIP aktualizacyjny i ich pliki `.sha256` — aktualizator sprawdza nimi, czy pobrana paczka nie została
+uszkodzona i czy zainstalowany silnik wideo nadal pasuje.
 
 ## Jak kolega pobiera
 

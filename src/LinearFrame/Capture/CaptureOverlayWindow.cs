@@ -30,6 +30,8 @@ public sealed class CaptureOverlayWindow : Window
     private readonly Canvas _layer;
     private readonly Border _toolbar;
     private readonly TextBlock _sizeText;
+    private TextBlock? _hdText;
+    private string? _busy;   // set while an HD render is under way: the overlay only shows the frozen picture
     private IntPtr _hwnd;
 
     private Mode _mode = Mode.Idle;
@@ -43,8 +45,14 @@ public sealed class CaptureOverlayWindow : Window
 
     public MonitorInfo Monitor { get; }
 
+    /// <summary>Overlay windows that have not been garbage-collected yet (each holds a screen-sized picture) - for the log.</summary>
+    internal static int Alive => _alive;
+    private static int _alive;
+    ~CaptureOverlayWindow() => Interlocked.Decrement(ref _alive);
+
     public CaptureOverlayWindow(CaptureSession session, MonitorInfo monitor, BitmapSource shot, List<Int32Rect> windows, bool activate)
     {
+        Interlocked.Increment(ref _alive);
         _session = session;
         Monitor = monitor;
         _shot = shot;
@@ -108,6 +116,9 @@ public sealed class CaptureOverlayWindow : Window
     internal Point MousePx => _mousePx;
     internal bool MouseInside => _mouseInside;
     internal ExportSize OutputSize => _session.Size;
+    /// <summary>How many times more pixels per side the current selection will get (1 = HD off).</summary>
+    internal int HdFactor => !_session.Hd ? 1 : _sel is Int32Rect s ? HdCapture.ScaleFor(s.Width, s.Height, _session.HdScale) : _session.HdScale;
+    internal string? BusyText => _busy;
     internal double Scale { get; private set; } = 1.0;
 
     private void OnSourceInitialized(object? sender, EventArgs e)
@@ -117,6 +128,9 @@ public sealed class CaptureOverlayWindow : Window
         Native.SetCloak(_hwnd, true);
         int disable = 1;
         Native.DwmSetWindowAttribute(_hwnd, Native.DWMWA_TRANSITIONS_FORCEDISABLED, ref disable, sizeof(int));
+        // No Direct3D device for the overlay: WPF would create one per monitor (50-60 MB each) and keep it for the rest
+        // of the session. The overlay is a still picture plus a rectangle, and only the area that changes is redrawn,
+        // so the CPU draws it in well under a millisecond per frame. (LF_OVERLAY_GPU=1 switches the GPU path back on.)
         Place();
         HwndSource.FromHwnd(_hwnd)?.AddHook((IntPtr h, int msg, IntPtr w, IntPtr l, ref bool handled) =>
         {
@@ -179,6 +193,18 @@ public sealed class CaptureOverlayWindow : Window
         sizeBtn.Click += (_, _) => _session.ShowSizeMenu(sizeBtn);
         panel.Children.Add(sizeBtn);
 
+        if (_session.HdAvailable)
+        {
+            // "HD": render the selection for real at 2-4x instead of taking the pixels off the screen
+            _hdText = new TextBlock { Text = "HD", FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center };
+            var hdBtn = new Button { Content = _hdText, ToolTip = L.F("Capture.HdTip", _session.HdScale), Margin = new Thickness(0, 0, 4, 0), Padding = new Thickness(10, 6, 10, 6) };
+            hdBtn.SetResourceReference(StyleProperty, "Hud.Button");
+            hdBtn.Background = Brushes.Transparent;
+            hdBtn.Click += (_, _) => _session.ToggleHd();
+            panel.Children.Add(hdBtn);
+            UpdateHdLook();
+        }
+
         panel.Children.Add(new Border { Width = 1, Margin = new Thickness(4, 7, 4, 7), Background = new SolidColorBrush(Color.FromArgb(0x40, 255, 255, 255)) });
         panel.Children.Add(Icon("save", L.T("Capture.SaveAs"), () => Commit(CaptureAction.SaveAs)));
         panel.Children.Add(Icon("close", L.T("Capture.Cancel"), () => _session.Cancel()));
@@ -212,8 +238,28 @@ public sealed class CaptureOverlayWindow : Window
         return (bar, sizeText);
     }
 
+    private static readonly Brush HdOnBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0xD6, 0x0A));
+
+    private void UpdateHdLook()
+    {
+        if (_hdText == null) return;
+        _hdText.Foreground = _session.Hd ? HdOnBrush : Brushes.White;
+        _hdText.Opacity = _session.Hd ? 1 : 0.45;
+    }
+
+    /// <summary>An HD render has started: keep showing the frozen screen, take no more input, say what is going on.</summary>
+    public void ShowBusy(string? text)
+    {
+        _busy = text ?? "";
+        _toolbar.Visibility = Visibility.Collapsed;
+        Cursor = Cursors.Wait;
+        ReleaseMouseCapture();
+        _surface.Redraw();
+    }
+
     private void OnSizeChanged()
     {
+        UpdateHdLook();
         _sizeText.Text = ExportSizes.Label(_session.Size);
         _surface.Redraw();
         Dispatcher.BeginInvoke(new Action(PositionToolbar), DispatcherPriority.Render);
@@ -267,6 +313,7 @@ public sealed class CaptureOverlayWindow : Window
 
     private void OnMouseMove(object sender, MouseEventArgs e)
     {
+        if (_busy != null) return;
         _mouseInside = true;
         _mousePx = ToPx(e);
         switch (_mode)
@@ -303,6 +350,7 @@ public sealed class CaptureOverlayWindow : Window
 
     private void OnMouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (_busy != null) return;
         Focus();
         var p = ToPx(e);
         _mousePx = p;
@@ -346,6 +394,7 @@ public sealed class CaptureOverlayWindow : Window
 
     private void OnMouseUp(object sender, MouseButtonEventArgs e)
     {
+        if (_busy != null) return;
         ReleaseMouseCapture();
         switch (_mode)
         {
@@ -377,6 +426,7 @@ public sealed class CaptureOverlayWindow : Window
     private void OnRightUp(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
+        if (_busy != null) return;
         if (_mode == Mode.Selected) ClearSelection();
         else _session.Cancel();
     }
@@ -391,6 +441,7 @@ public sealed class CaptureOverlayWindow : Window
 
     public void ClearSelection()
     {
+        if (_busy != null) return;
         _sel = null;
         _mode = Mode.Idle;
         _toolbar.Visibility = Visibility.Collapsed;
@@ -487,12 +538,18 @@ internal sealed class SelectionSurface : FrameworkElement
 
     private readonly CaptureOverlayWindow _owner;
     private readonly DrawingVisual _overlay = new();
+    private readonly ImageBrush _bright; // the undimmed screen, windowed to the selection
+    private (Int32Rect? Sel, Int32Rect? Hover, bool Handles, bool Dragging, Point Mouse, ExportSize Size, int Hd, string? Busy, double Scale, double W, double H) _drawn;
+    private bool _hasDrawn;
 
     public SelectionSurface(CaptureOverlayWindow owner)
     {
         _owner = owner;
         AddVisualChild(_overlay);
         RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.NearestNeighbor);
+        RenderOptions.SetBitmapScalingMode(_overlay, BitmapScalingMode.NearestNeighbor);
+        _bright = new ImageBrush(owner.Shot) { ViewboxUnits = BrushMappingMode.Absolute, Stretch = Stretch.Fill, TileMode = TileMode.None };
+        RenderOptions.SetBitmapScalingMode(_bright, BitmapScalingMode.NearestNeighbor);
     }
 
     private static T Frozen<T>(T f) where T : Freezable { f.Freeze(); return f; }
@@ -502,8 +559,11 @@ internal sealed class SelectionSurface : FrameworkElement
 
     protected override void OnRender(DrawingContext dc)
     {
-        // frozen screen, 1 bitmap pixel = 1 device pixel
-        dc.DrawImage(_owner.Shot, new Rect(0, 0, ActualWidth, ActualHeight));
+        // The frozen screen (1 bitmap pixel = 1 device pixel), dimmed - drawn once and never touched again.
+        // The selection is a second, small layer on top that shows the same picture undimmed (see Redraw).
+        var full = new Rect(0, 0, ActualWidth, ActualHeight);
+        dc.DrawImage(_owner.Shot, full);
+        dc.DrawRectangle(Dim, null, full);
     }
 
     protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
@@ -516,19 +576,25 @@ internal sealed class SelectionSurface : FrameworkElement
     {
         double k = _owner.Scale;
         double W = ActualWidth, H = ActualHeight;
+        // Nothing visible changed (e.g. the mouse moved inside the same window) -> nothing to redraw.
+        bool dragging = _owner.IsDragging;
+        var state = (_owner.Selection, _owner.Hover, _owner.ShowHandles, dragging, dragging ? _owner.MousePx : default,
+            _owner.OutputSize, _owner.HdFactor, _owner.BusyText, k, W, H);
+        if (_hasDrawn && state.Equals(_drawn)) return;
+        _drawn = state;
+        _hasDrawn = true;
+
         using var dc = _overlay.RenderOpen();
         if (W <= 0) return;
 
+        // Only the selected (or hovered) area is drawn here: the screen picture without the dimming. Everything
+        // around it is the static layer underneath, so a moving selection redraws just its own rectangle.
         Int32Rect? clearPx = _owner.Selection ?? _owner.Hover;
         if (clearPx is Int32Rect c && c.Width > 0 && c.Height > 0)
         {
-            var r = new Rect(c.X / k, c.Y / k, c.Width / k, c.Height / k);
-            dc.DrawRectangle(Dim, null, new Rect(0, 0, W, r.Top));
-            dc.DrawRectangle(Dim, null, new Rect(0, r.Bottom, W, Math.Max(0, H - r.Bottom)));
-            dc.DrawRectangle(Dim, null, new Rect(0, r.Top, r.Left, r.Height));
-            dc.DrawRectangle(Dim, null, new Rect(r.Right, r.Top, Math.Max(0, W - r.Right), r.Height));
+            _bright.Viewbox = new Rect(c.X, c.Y, c.Width, c.Height); // picture pixels
+            dc.DrawRectangle(_bright, null, new Rect(c.X / k, c.Y / k, c.Width / k, c.Height / k));
         }
-        else dc.DrawRectangle(Dim, null, new Rect(0, 0, W, H));
 
         if (_owner.Selection is Int32Rect s && s.Width > 0 && s.Height > 0)
         {
@@ -536,7 +602,7 @@ internal sealed class SelectionSurface : FrameworkElement
             var r = new Rect(s.X / k + half, s.Y / k + half, Math.Max(0, s.Width / k - 2 * half), Math.Max(0, s.Height / k - 2 * half));
             dc.DrawRectangle(null, new Pen(Brushes.White, 1 / k), r);
 
-            if (_owner.ShowHandles)
+            if (_owner.ShowHandles && _owner.BusyText == null)
             {
                 foreach (var hp in CaptureOverlayWindow.HandlePoints(s))
                     dc.DrawEllipse(Brushes.White, HandlePen, new Point(hp.X / k, hp.Y / k), 4.5, 4.5);
@@ -553,10 +619,17 @@ internal sealed class SelectionSurface : FrameworkElement
     private void DrawSizeLabel(DrawingContext dc, Int32Rect s, double k, double W, double H)
     {
         string text = $"{s.Width} × {s.Height}";
-        if (_owner.OutputSize != ExportSize.Original && !_owner.IsDragging)
+        int hd = _owner.HdFactor;
+        if (!string.IsNullOrEmpty(_owner.BusyText)) text = _owner.BusyText!;
+        else if (!_owner.IsDragging)
         {
-            var (tw, th) = ExportSizes.TargetSize(_owner.OutputSize, s.Width, s.Height);
-            text += $"  →  {tw} × {th}";
+            if (_owner.OutputSize != ExportSize.Original)
+            {
+                var (tw, th) = ExportSizes.TargetSize(_owner.OutputSize, s.Width * hd, s.Height * hd);
+                text += $"  →  {tw} × {th}";
+            }
+            else if (hd > 1) text += $"  →  {s.Width * hd} × {s.Height * hd}";
+            if (hd > 1) text += "  HD";
         }
         var ft = new FormattedText(text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, Face, 12, Brushes.White, 1.0);
         double pad = 7, w = ft.Width + pad * 2, h = ft.Height + 6;

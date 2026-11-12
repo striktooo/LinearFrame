@@ -25,6 +25,15 @@ internal static class AppPaths
         BaseDir.Contains(@"\bin\Debug\", StringComparison.OrdinalIgnoreCase) ||
         BaseDir.Contains(@"\bin\Release\", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// LINEARFRAME_INSTANCE=name runs a second, separate copy next to the normal one (own single-instance lock and
+    /// message window) - for testing updates and the like without touching the installed app.
+    /// </summary>
+    public static string Instance { get; } = (Environment.GetEnvironmentVariable("LINEARFRAME_INSTANCE") ?? "").Trim();
+
+    /// <summary>Only the real, installed app registers itself with Windows (autostart, Start menu entry).</summary>
+    public static bool RegistersWithWindows => !IsDevBuild && Instance.Length == 0;
+
     public static string DefaultScreenshotDir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), AppName);
 
