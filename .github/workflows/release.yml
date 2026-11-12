@@ -1,0 +1,64 @@
+name: Build & release
+
+# Push a tag like v1.0.0 -> GitHub builds the Windows package and publishes it on the Releases page.
+# Pushing to main (or opening a PR) only builds it and attaches the ZIP as a workflow artifact.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $v = '${{ github.ref_name }}'.TrimStart('v')
+          (Get-Content src/LinearFrame/LinearFrame.csproj) -replace '<Version>[^<]+</Version>', "<Version>$v</Version>" |
+            Set-Content src/LinearFrame/LinearFrame.csproj
+
+      - name: Build package
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./build.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LinearFrame-win-x64
+          path: |
+            dist/*.zip
+            dist/*.sha256
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view '${{ github.ref_name }}' *> $null
+          if ($LASTEXITCODE -eq 0) { Write-Host 'Release already exists (published by hand) - leaving it as it is.'; exit 0 }
+          $mpv = Get-Content deps/mpv/VERSION.txt -ErrorAction SilentlyContinue
+          $ff = Get-Content deps/ffmpeg/VERSION.txt -ErrorAction SilentlyContinue
+          $notes = @"
+          ## Download
+          **LinearFrame-${{ github.ref_name }}-win-x64.zip** — unzip and run ``LinearFrame.exe`` (Windows 10/11, 64-bit, no installation needed).
+
+          Pobierz ZIP, rozpakuj i uruchom ``LinearFrame.exe``. Jeśli pojawi się „System Windows ochronił ten komputer”: *Więcej informacji → Uruchom mimo to*.
+
+          Bundled engine: $mpv · $ff
+          "@
+          gh release create '${{ github.ref_name }}' (Get-ChildItem dist/*.zip, dist/*.sha256).FullName --title 'LinearFrame ${{ github.ref_name }}' --notes $notes --generate-notes

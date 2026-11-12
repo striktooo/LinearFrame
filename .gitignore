@@ -1,0 +1,15 @@
+# build output
+bin/
+obj/
+dist/
+
+# downloaded engine binaries (fetched by scripts/fetch-deps.ps1)
+deps/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.DotSettings.user

@@ -1,0 +1,202 @@
+<Window x:Class="LinearFrame.Editor.EditorWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:core="clr-namespace:LinearFrame.Core"
+        xmlns:ui="clr-namespace:LinearFrame.UI"
+        xmlns:ed="clr-namespace:LinearFrame.Editor"
+        Title="LinearFrame" Width="1180" Height="760" MinWidth="1060" MinHeight="560"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource Brush.CanvasBg}"
+        Foreground="{DynamicResource Brush.Text}"
+        FontFamily="{StaticResource Font.UI}"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="52" ResizeBorderThickness="6" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"/>
+    </WindowChrome.WindowChrome>
+
+    <Grid TextElement.Foreground="{DynamicResource Brush.Text}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="52"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="30"/>
+        </Grid.RowDefinitions>
+
+        <!-- ================= Toolbar (also the title bar) ================= -->
+        <Border Background="{DynamicResource Brush.ToolbarBg}" BorderBrush="{DynamicResource Brush.Separator}" BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
+                    <StackPanel Orientation="Horizontal" WindowChrome.IsHitTestVisibleInChrome="True">
+                        <Button x:Name="UndoBtn" Style="{StaticResource Btn.Icon}" ToolTip="{core:Loc Editor.Undo}" Click="Undo_Click">
+                            <ui:IconView Icon="undo"/>
+                        </Button>
+                        <Button x:Name="RedoBtn" Style="{StaticResource Btn.Icon}" ToolTip="{core:Loc Editor.Redo}" Click="Redo_Click">
+                            <ui:IconView Icon="redo"/>
+                        </Button>
+                    </StackPanel>
+                    <TextBlock x:Name="TitleText" VerticalAlignment="Center" Margin="12,0,10,0" FontWeight="SemiBold" FontSize="13"
+                               TextTrimming="CharacterEllipsis" MaxWidth="200" Foreground="{DynamicResource Brush.TextSecondary}"/>
+                </StackPanel>
+
+                <!-- tools -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Center" WindowChrome.IsHitTestVisibleInChrome="True">
+                    <RadioButton x:Name="ToolSelect" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Select" ToolTip="{core:Loc Editor.Select}" Checked="Tool_Checked"><ui:IconView Icon="select"/></RadioButton>
+                    <Border Width="1" Margin="5,8" Background="{DynamicResource Brush.Separator}"/>
+                    <RadioButton x:Name="ToolPen" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Pen" ToolTip="{core:Loc Editor.Pen}" Checked="Tool_Checked"><ui:IconView Icon="pen"/></RadioButton>
+                    <RadioButton x:Name="ToolHighlighter" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Highlighter" ToolTip="{core:Loc Editor.Highlighter}" Checked="Tool_Checked"><ui:IconView Icon="highlighter"/></RadioButton>
+                    <RadioButton x:Name="ToolArrow" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Arrow" ToolTip="{core:Loc Editor.Arrow}" Checked="Tool_Checked"><ui:IconView Icon="arrow"/></RadioButton>
+                    <RadioButton x:Name="ToolLine" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Line" ToolTip="{core:Loc Editor.Line}" Checked="Tool_Checked"><ui:IconView Icon="line"/></RadioButton>
+                    <RadioButton x:Name="ToolRect" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Rect" ToolTip="{core:Loc Editor.Rect}" Checked="Tool_Checked"><ui:IconView Icon="rect"/></RadioButton>
+                    <RadioButton x:Name="ToolEllipse" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Ellipse" ToolTip="{core:Loc Editor.Ellipse}" Checked="Tool_Checked"><ui:IconView Icon="ellipse"/></RadioButton>
+                    <RadioButton x:Name="ToolText" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Text" ToolTip="{core:Loc Editor.Text}" Checked="Tool_Checked"><ui:IconView Icon="text"/></RadioButton>
+                    <RadioButton x:Name="ToolCounter" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Counter" ToolTip="{core:Loc Editor.Counter}" Checked="Tool_Checked"><ui:IconView Icon="counter"/></RadioButton>
+                    <RadioButton x:Name="ToolPixelate" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Pixelate" ToolTip="{core:Loc Editor.Pixelate}" Checked="Tool_Checked"><ui:IconView Icon="pixelate"/></RadioButton>
+                    <Border Width="1" Margin="5,8" Background="{DynamicResource Brush.Separator}"/>
+                    <ToggleButton x:Name="CropToggle" Style="{StaticResource Tool.Toggle}" ToolTip="{core:Loc Editor.Crop}" Click="Crop_Click"><ui:IconView Icon="crop"/></ToggleButton>
+                    <Border Width="1" Margin="5,8" Background="{DynamicResource Brush.Separator}"/>
+                    <Button x:Name="ColorBtn" Style="{StaticResource Btn.Icon}" ToolTip="{core:Loc Editor.Color}" Click="Color_Click">
+                        <Grid Width="20" Height="20">
+                            <Ellipse x:Name="ColorDot" Fill="#FF3B30" Stroke="#40000000" StrokeThickness="1"/>
+                            <Ellipse Margin="3" Stroke="White" StrokeThickness="1.4" Opacity="0.9"/>
+                        </Grid>
+                    </Button>
+                    <Button x:Name="WidthBtn" Style="{StaticResource Btn.Icon}" ToolTip="{core:Loc Editor.Width}" Click="Width_Click">
+                        <Grid Width="20" Height="20">
+                            <Line X1="3" Y1="5" X2="17" Y2="5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                            <Line X1="3" Y1="10" X2="17" Y2="10" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="2.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                            <Line X1="3" Y1="16" X2="17" Y2="16" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="3.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                        </Grid>
+                    </Button>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"
+                            WindowChrome.IsHitTestVisibleInChrome="True">
+                    <Button x:Name="SizeBtn" Style="{StaticResource Btn.Icon}" Width="Auto" Padding="10,0" ToolTip="{core:Loc Capture.SizeTip}" Click="Size_Click" Margin="0,0,4,0">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:IconView Icon="size" Width="15" Height="15"/>
+                            <TextBlock x:Name="SizeText" Margin="6,0,4,0" VerticalAlignment="Center"/>
+                            <ui:IconView Icon="chevron-down" Width="12" Height="12" Opacity="0.7"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource Btn.Icon}" ToolTip="{core:Loc Editor.More}" Click="More_Click" Margin="0,0,6,0">
+                        <ui:IconView Icon="more"/>
+                    </Button>
+                    <Button Style="{StaticResource Btn.Secondary}" Click="Copy_Click" Margin="0,0,8,0" Padding="12,6">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:IconView Icon="copy" Width="15" Height="15"/>
+                            <TextBlock Text="{core:Loc Editor.Copy}" Margin="6,0,0,0"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource Btn.Primary}" Content="{core:Loc Editor.Done}" Click="Done_Click" Padding="16,6"/>
+                </StackPanel>
+
+                <ui:CaptionButtons Grid.Column="3"/>
+            </Grid>
+        </Border>
+
+        <!-- ================= Crop & extend bar ================= -->
+        <Border x:Name="CropBar" Grid.Row="1" Visibility="Collapsed" Background="{DynamicResource Brush.ToolbarBg}"
+                BorderBrush="{DynamicResource Brush.Separator}" BorderThickness="0,0,0,1" Padding="16,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <WrapPanel VerticalAlignment="Center">
+                    <TextBlock Text="{core:Loc Editor.Ratio}" VerticalAlignment="Center" Margin="0,0,8,0" Style="{StaticResource Text.Caption}" FontSize="12.5"/>
+                    <Border Style="{StaticResource Segment.Container}" VerticalAlignment="Center" Margin="0,0,18,0">
+                        <StackPanel x:Name="RatioPanel" Orientation="Horizontal"/>
+                    </Border>
+                    <TextBlock Text="{core:Loc Editor.Margin}" VerticalAlignment="Center" Margin="0,0,8,0" Style="{StaticResource Text.Caption}" FontSize="12.5"/>
+                    <Slider x:Name="MarginSlider" Style="{StaticResource Slider.Thin}" Width="130" Minimum="0" Maximum="0.5" Value="0" VerticalAlignment="Center" Margin="0,0,18,0"
+                            ValueChanged="Margin_ValueChanged"/>
+                    <TextBlock Text="{core:Loc Editor.Background}" VerticalAlignment="Center" Margin="0,0,8,0" Style="{StaticResource Text.Caption}" FontSize="12.5"/>
+                    <Border Style="{StaticResource Segment.Container}" VerticalAlignment="Center" Margin="0,0,8,0">
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton x:Name="FillAuto" Style="{StaticResource Segment.Item}" GroupName="fill" Checked="Fill_Checked" Tag="auto">
+                                <StackPanel Orientation="Horizontal">
+                                    <Border x:Name="AutoSwatch" Width="12" Height="12" CornerRadius="6" BorderBrush="#40000000" BorderThickness="1" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                    <TextBlock Text="{core:Loc Editor.Auto}"/>
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="FillTransparent" Style="{StaticResource Segment.Item}" GroupName="fill" Checked="Fill_Checked" Tag="transparent">
+                                <StackPanel Orientation="Horizontal">
+                                    <ui:IconView Icon="transparent" Width="13" Height="13" Margin="0,0,6,0" StrokeWidth="1.6"/>
+                                    <TextBlock Text="{core:Loc Editor.Transparent}"/>
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="FillCustom" Style="{StaticResource Segment.Item}" GroupName="fill" Checked="Fill_Checked" Tag="color" Visibility="Collapsed">
+                                <Border x:Name="CustomSwatch" Width="12" Height="12" CornerRadius="6" BorderBrush="#40000000" BorderThickness="1" VerticalAlignment="Center"/>
+                            </RadioButton>
+                        </StackPanel>
+                    </Border>
+                    <Button Style="{StaticResource Btn.Icon}" ToolTip="{core:Loc Editor.Pick}" Click="Pick_Click" VerticalAlignment="Center">
+                        <ui:IconView Icon="eyedropper"/>
+                    </Button>
+                </WrapPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Style="{StaticResource Btn.Secondary}" Content="{core:Loc Editor.Reset}" Click="CropReset_Click" Margin="0,0,8,0" Padding="12,5"/>
+                    <Button Style="{StaticResource Btn.Secondary}" Content="{core:Loc Common.Cancel}" Click="CropCancel_Click" Margin="0,0,8,0" Padding="12,5"/>
+                    <Button Style="{StaticResource Btn.Primary}" Content="{core:Loc Editor.Apply}" Click="CropApply_Click" Padding="14,5"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ================= Canvas ================= -->
+        <ScrollViewer x:Name="Scroller" Grid.Row="2" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Focusable="False">
+            <Grid x:Name="CanvasHost" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="48">
+                <Border x:Name="CanvasShadow" Background="#FF808080" Width="{Binding ActualWidth, ElementName=View}" Height="{Binding ActualHeight, ElementName=View}">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="24" ShadowDepth="4" Opacity="0.3" Direction="270"/>
+                    </Border.Effect>
+                </Border>
+                <ed:MarkupView x:Name="View"/>
+                <Canvas x:Name="TextLayer"/>
+            </Grid>
+        </ScrollViewer>
+
+        <!-- ================= Status bar ================= -->
+        <Border Grid.Row="3" Background="{DynamicResource Brush.ToolbarBg}" BorderBrush="{DynamicResource Brush.Separator}" BorderThickness="0,1,0,0">
+            <Grid Margin="14,0,8,0">
+                <TextBlock x:Name="StatusText" VerticalAlignment="Center" Style="{StaticResource Text.Caption}" FontSize="12"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <Button Style="{StaticResource Btn.Icon}" Width="28" Height="24" Click="ZoomOut_Click"><ui:IconView Icon="minus" Width="14" Height="14"/></Button>
+                    <TextBlock x:Name="ZoomText" Width="48" TextAlignment="Center" VerticalAlignment="Center" Style="{StaticResource Text.Caption}" FontSize="12"/>
+                    <Button Style="{StaticResource Btn.Icon}" Width="28" Height="24" Click="ZoomIn_Click"><ui:IconView Icon="plus" Width="14" Height="14"/></Button>
+                    <Button Style="{StaticResource Btn.Icon}" Width="Auto" Height="24" Padding="8,0" Click="ZoomFit_Click" Margin="4,0,0,0">
+                        <TextBlock Text="{core:Loc Editor.Fit}" FontSize="12"/>
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ================= Busy ================= -->
+        <Border x:Name="BusyOverlay" Grid.RowSpan="4" Visibility="Collapsed" Background="#55000000">
+            <Border Background="#E61F1F22" CornerRadius="14" Padding="26,18" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock Text="{core:Loc Editor.Exporting}" Foreground="White" FontSize="14" FontWeight="SemiBold"/>
+            </Border>
+        </Border>
+
+        <!-- ================= Popups ================= -->
+        <Popup x:Name="ColorPopup" PlacementTarget="{Binding ElementName=ColorBtn}" Placement="Bottom" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade" VerticalOffset="6">
+            <Border Background="{DynamicResource Brush.CardBg}" BorderBrush="{DynamicResource Brush.CardBorder}" BorderThickness="1" CornerRadius="12" Padding="10" Margin="8">
+                <Border.Effect><DropShadowEffect BlurRadius="16" ShadowDepth="3" Opacity="0.25" Direction="270"/></Border.Effect>
+                <UniformGrid x:Name="SwatchGrid" Columns="5"/>
+            </Border>
+        </Popup>
+        <Popup x:Name="WidthPopup" PlacementTarget="{Binding ElementName=WidthBtn}" Placement="Bottom" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade" VerticalOffset="6">
+            <Border Background="{DynamicResource Brush.CardBg}" BorderBrush="{DynamicResource Brush.CardBorder}" BorderThickness="1" CornerRadius="12" Padding="6" Margin="8">
+                <Border.Effect><DropShadowEffect BlurRadius="16" ShadowDepth="3" Opacity="0.25" Direction="270"/></Border.Effect>
+                <StackPanel x:Name="WidthList"/>
+            </Border>
+        </Popup>
+    </Grid>
+</Window>

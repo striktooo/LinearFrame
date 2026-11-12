@@ -1,0 +1,41 @@
+LinearFrame — zrzuty ekranu i wideo, po prostu
+================================================
+
+JAK URUCHOMIĆ
+  1. Rozpakuj cały folder (np. do Dokumentów albo C:\Programy\LinearFrame).
+  2. Uruchom LinearFrame.exe. Instalacja nie jest potrzebna.
+  3. Jeśli Windows pokaże „System Windows ochronił ten komputer”, kliknij „Więcej informacji” → „Uruchom mimo to”
+     (aplikacja nie ma płatnego certyfikatu podpisu — to normalne dla darmowych projektów open source).
+
+Aplikacja działa w tle. Jej ikonka siedzi w zasobniku obok zegara (na Windows 11 czasem pod strzałką „^” —
+możesz ją przeciągnąć na pasek, żeby była zawsze widoczna).
+
+SKRÓTY
+  Ctrl+Shift+4   zaznacz obszar (kliknij okno, żeby złapać całe okno; przeciągnij, żeby zaznaczyć kawałek)
+  Ctrl+Shift+3   cały ekran
+  Po zaznaczeniu:  Ctrl+C / Enter = kopiuj i zapisz,  E = edytor (strzałki, tekst, zamazywanie, kadr 16:9, 4K…),
+                   Ctrl+S = zapisz jako,  Esc = anuluj,  strzałki = przesuń zaznaczenie
+  Skróty zmienisz w Ustawieniach.
+
+Zrzuty zapisują się w folderze Obrazy\LinearFrame i trafiają do schowka.
+
+ODTWARZACZ
+  Przeciągnij film/muzykę na okno LinearFrame albo otwórz plik przez „Otwórz za pomocą”.
+  Spacja — pauza, ←/→ — 5 s, F — pełny ekran, E — edycja bez utraty jakości:
+    „Przytnij” zostawia zaznaczony fragment, „Wytnij fragment” usuwa go i skleja resztę.
+    Potem „Zapisz jako nowy klip” albo „Zastąp oryginał” (oryginał trafia do Kosza).
+
+AKTUALIZACJE
+  LinearFrame sam sprawdza nowe wersje na GitHubie i instaluje je po cichu, gdy z niego nie korzystasz.
+  Wyłączysz to w Ustawieniach → Aktualizacje.
+
+FOLDER „engine”
+  libmpv-2.dll (silnik odtwarzania) i ffmpeg.exe (przycinanie) — nie usuwaj go.
+
+ODINSTALOWANIE
+  W Ustawieniach wyłącz „Uruchamiaj razem z Windows”, zakończ aplikację (ikonka w zasobniku → Zakończ)
+  i usuń folder. Ustawienia są w %APPDATA%\LinearFrame.
+
+-------------------------------------------------------------------------------------------------
+LinearFrame — screenshots & video, simply.  Unzip, run LinearFrame.exe.  Ctrl+Shift+4 = capture an area.
+Updates install themselves.  Open source (MIT): https://github.com/striktooo/LinearFrame

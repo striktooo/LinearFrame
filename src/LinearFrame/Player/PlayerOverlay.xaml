@@ -1,0 +1,107 @@
+<Window x:Class="LinearFrame.Player.PlayerOverlay"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:core="clr-namespace:LinearFrame.Core"
+        xmlns:ui="clr-namespace:LinearFrame.UI"
+        xmlns:pl="clr-namespace:LinearFrame.Player"
+        Title="LinearFrame.PlayerOverlay"
+        WindowStyle="None" AllowsTransparency="True" Background="#01000000"
+        ShowInTaskbar="False" ShowActivated="False" ResizeMode="NoResize" AllowDrop="True"
+        Foreground="White" FontFamily="{StaticResource Font.UI}" FontSize="13"
+        UseLayoutRounding="True" WindowStartupLocation="Manual" Width="400" Height="300">
+    <Grid x:Name="Root">
+
+        <!-- top bar -->
+        <Grid x:Name="TopBar" VerticalAlignment="Top" Height="64">
+            <Grid.Background>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                    <GradientStop Color="#99000000" Offset="0"/>
+                    <GradientStop Color="#00000000" Offset="1"/>
+                </LinearGradientBrush>
+            </Grid.Background>
+            <TextBlock x:Name="TitleText" Margin="18,14,260,0" VerticalAlignment="Top" HorizontalAlignment="Left" FontSize="13.5" FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis" Opacity="0.95"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+                <Button x:Name="EditBtn" Style="{StaticResource Hud.Button}" Margin="0,10,10,0" Padding="12,5" Click="Edit_Click" VerticalAlignment="Top">
+                    <StackPanel Orientation="Horizontal">
+                        <ui:IconView Icon="scissors" Width="15" Height="15"/>
+                        <TextBlock Text="{core:Loc Player.Edit}" Margin="7,0,0,0"/>
+                    </StackPanel>
+                </Button>
+                <StackPanel x:Name="WindowButtons" Orientation="Horizontal" VerticalAlignment="Top">
+                    <Button Style="{StaticResource Hud.IconButton}" Width="46" Height="38" Click="Min_Click">
+                        <ui:IconView Icon="minimize" Width="16" Height="16" StrokeWidth="1.5"/>
+                    </Button>
+                    <Button Style="{StaticResource Hud.IconButton}" Width="46" Height="38" Click="Max_Click">
+                        <ui:IconView x:Name="MaxIcon" Icon="maximize" Width="16" Height="16" StrokeWidth="1.5"/>
+                    </Button>
+                    <Button x:Name="CloseBtn" Style="{StaticResource Hud.IconButton}" Width="46" Height="38" Click="Close_Click">
+                        <ui:IconView Icon="close" Width="16" Height="16" StrokeWidth="1.5"/>
+                    </Button>
+                </StackPanel>
+            </StackPanel>
+        </Grid>
+
+        <!-- play / pause feedback -->
+        <Border x:Name="FlashBadge" Width="76" Height="76" CornerRadius="38" Background="#99000000" Opacity="0"
+                IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <ui:IconView x:Name="FlashIcon" Icon="play" Width="32" Height="32"/>
+        </Border>
+
+        <!-- QuickTime-like control pill -->
+        <Border x:Name="Controls" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="16,0,16,18"
+                Width="580" CornerRadius="16" Background="#D91F1F22" BorderBrush="#30FFFFFF" BorderThickness="1" Padding="14,6,14,10">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="22" ShadowDepth="3" Opacity="0.35" Direction="270"/>
+            </Border.Effect>
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
+                        <Button x:Name="MuteBtn" Style="{StaticResource Hud.IconButton}" Click="Mute_Click">
+                            <ui:IconView x:Name="VolIcon" Icon="volume"/>
+                        </Button>
+                        <pl:ThinSlider x:Name="VolumeSlider" Width="84" VerticalAlignment="Center" Margin="2,0,0,0"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Button Style="{StaticResource Hud.IconButton}" Click="Back_Click" ToolTip="−10 s">
+                            <ui:IconView Icon="back" Width="20" Height="20"/>
+                        </Button>
+                        <Button x:Name="PlayBtn" Style="{StaticResource Hud.IconButton}" Width="48" Height="42" Margin="8,0" Click="Play_Click">
+                            <ui:IconView x:Name="PlayIcon" Icon="pause" Width="26" Height="26"/>
+                        </Button>
+                        <Button Style="{StaticResource Hud.IconButton}" Click="Forward_Click" ToolTip="+10 s">
+                            <ui:IconView Icon="forward" Width="20" Height="20"/>
+                        </Button>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                        <Button x:Name="MoreBtn" Style="{StaticResource Hud.IconButton}" Click="More_Click">
+                            <ui:IconView Icon="more"/>
+                        </Button>
+                        <Button x:Name="FullBtn" Style="{StaticResource Hud.IconButton}" Click="Full_Click" ToolTip="{core:Loc Player.Fullscreen}">
+                            <ui:IconView x:Name="FullIcon" Icon="fullscreen"/>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+                <Grid Grid.Row="1" Margin="0,4,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="56"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="56"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="ElapsedText" Text="0:00" FontSize="11.5" Opacity="0.85" VerticalAlignment="Center" TextAlignment="Left"/>
+                    <pl:ThinSlider x:Name="Scrubber" Grid.Column="1" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="RemainingText" Grid.Column="2" Text="-0:00" FontSize="11.5" Opacity="0.85" VerticalAlignment="Center" TextAlignment="Right"/>
+                </Grid>
+            </Grid>
+        </Border>
+
+        <!-- drop hint -->
+        <Border x:Name="DropHint" Visibility="Collapsed" Margin="18" CornerRadius="16" BorderBrush="#CCFFFFFF" BorderThickness="2" Background="#33000000" IsHitTestVisible="False">
+            <ui:IconView Icon="film" Width="56" Height="56" StrokeWidth="1.5"/>
+        </Border>
+    </Grid>
+</Window>

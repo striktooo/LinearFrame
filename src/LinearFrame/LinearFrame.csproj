@@ -1,0 +1,64 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>LinearFrame</AssemblyName>
+    <RootNamespace>LinearFrame</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon Condition="Exists('Assets\LinearFrame.ico')">Assets\LinearFrame.ico</ApplicationIcon>
+
+    <Version>1.0.0</Version>
+    <Product>LinearFrame</Product>
+    <Description>Screenshots, media player and quick lossless trimming for Windows.</Description>
+    <Copyright>LinearFrame contributors</Copyright>
+    <NeutralLanguage>en</NeutralLanguage>
+
+    <!-- Keep the app small and frugal -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+    <DebugType>embedded</DebugType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CA1416;WPF0001</NoWarn>
+  </PropertyGroup>
+
+  <!-- Release publish: one self-contained exe (no .NET install needed on the target PC) -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+    <PublishReadyToRun>true</PublishReadyToRun>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WPF projects don't get System.IO implicitly (Path clashes with Shapes.Path) -->
+    <Using Include="System.IO" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="5" />
+    <RuntimeHostConfigurationOption Include="System.GC.RetainVM" Value="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\LinearFrame.ico" Condition="Exists('Assets\LinearFrame.ico')" />
+  </ItemGroup>
+
+  <!-- Playback engine (libmpv) and ffmpeg live in an "engine" folder next to the exe -->
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\deps\mpv\libmpv-2.dll')">
+    <None Include="$(MSBuildThisFileDirectory)..\..\deps\mpv\libmpv-2.dll" Link="engine\libmpv-2.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\deps\ffmpeg\ffmpeg.exe')">
+    <None Include="$(MSBuildThisFileDirectory)..\..\deps\ffmpeg\ffmpeg.exe" Link="engine\ffmpeg.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" Visible="false" />
+  </ItemGroup>
+
+</Project>
