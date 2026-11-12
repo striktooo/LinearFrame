@@ -33,9 +33,21 @@ Naciskasz **Ctrl + Shift + 4**: ekran zamarza i lekko przyciemnia się. **Przeci
 **klikasz okno**, żeby złapać dokładnie to okno. **Ctrl + C** (albo Enter) — zrzut jest w schowku *i* zapisany jako PNG w
 `Obrazy\LinearFrame`. W rogu wysuwa się miniaturka: kliknięcie otwiera edytor, a przeciągnięcie wrzuca plik prosto do czatu czy maila.
 
-- **Ctrl + Shift + 3** — cały ekran. Oba skróty zmienisz w Ustawieniach.
+- Skrót ustawiasz, jak chcesz: kombinacja, **jeden klawisz** (End, F13, PrintScreen…) albo **boczny przycisk myszy**
+  (Mysz 4 / Mysz 5) — plus opcjonalny drugi skrót. Kliknięcie pustego pulpitu łapie cały monitor.
 - Rozmiar wybierasz od razu na pasku: **Oryginał, Full HD, 2K, 4K albo 8K**.
 - Wiele monitorów i różne skalowania (DPI); prawdziwe, fizyczne piksele. Strzałkami przesuwasz zaznaczenie co piksel.
+
+### ✨ Tryb Retina — zrzuty ostre jak na Macu, na każdym monitorze
+Na Macu nawet mały przycisk wychodzi na zrzucie ostro, bo macOS rysuje wszystko w **2×** (Retina). LinearFrame przełącza Windows
+dokładnie w to samo jednym kliknięciem (*Ustawienia → Jakość zrzutów*): pulpit renderuje się w dwa razy wyższej rozdzielczości —
+np. 3840×2160 ze skalowaniem 200 % na monitorze 1920×1080 — a karta graficzna zmniejsza obraz do Twojego monitora, więc wszystko
+zostaje tej samej wielkości. Każda aplikacja rysuje teraz tekst, ikony i wektorowy interfejs czterokrotnie większą liczbą
+prawdziwych pikseli, a każdy zrzut ma te szczegóły. **Prawdziwe renderowanie — bez powiększania i bez AI.**
+
+Potrzebny jest NVIDIA DSR (4,00x, starsze skalowanie) albo AMD Virtual Super Resolution — aplikacja podpowie, gdzie to włączyć.
+Ułożenie monitorów zostaje zachowane, a okienko „Zostawić?” samo wszystko cofa po 15 sekundach. Szybkie przełączanie w menu ikony
+w zasobniku (np. wyłączenie na czas gier).
 
 ### ✏️ Adnotacje i kadr, który rośnie
 ![Edytor](docs/images/editor.png)
@@ -90,12 +102,12 @@ i muzykę w LinearFrame*; pliki wideo dostają też pozycję **Przytnij w Linear
 
 | Gdzie | Klawisze |
 |---|---|
-| Wszędzie | **Ctrl+Shift+4** obszar · **Ctrl+Shift+3** cały ekran |
+| Wszędzie | **Ctrl+Shift+4** zrzut (albo Twój klawisz / przycisk myszy) |
 | Przy zaznaczaniu | **Ctrl+C / Enter** kopiuj i zapisz · **E** edytuj · **Ctrl+S** zapisz jako · **Esc** anuluj · **strzałki** przesuń · prawy klik czyści |
 | Edytor | **V P H A L R O T N B** narzędzia · **C** kadruj i rozszerz · **Ctrl+Z / Ctrl+Shift+Z** · **Ctrl+C** kopiuj · **Ctrl+S** gotowe |
 | Odtwarzacz | **Spacja** pauza · **← →** 5 s · **J L** 10 s · **, .** klatka · **↑ ↓** głośność · **M** wycisz · **F** pełny ekran · **E** edycja · **X** przytnij/wytnij · **I O** początek/koniec |
 
-Wiersz poleceń: `LinearFrame.exe film.mp4` · `--trim film.mp4` · `--cut film.mp4` · `--capture` · `--capture-full` · `--settings` · `--exit`
+Wiersz poleceń: `LinearFrame.exe film.mp4` · `--trim film.mp4` · `--cut film.mp4` · `--capture` · `--settings` · `--exit`
 
 ---
 
@@ -123,7 +135,9 @@ flowchart LR
 <details>
 <summary><b>Zrzuty</b></summary>
 
-- Skróty przez `RegisterHotKey` na ukrytym oknie — zero odpytywania, zero CPU w oczekiwaniu.
+- Skróty przez `RegisterHotKey` na ukrytym oknie — zero odpytywania, zero CPU w oczekiwaniu. Boczne przyciski myszy wymagają haka
+  `WH_MOUSE_LL`; istnieje on tylko wtedy, gdy przypiszesz przycisk myszy, działa w osobnym wątku (mysz nigdy nie czeka na interfejs)
+  i połyka wyłącznie to jedno kliknięcie.
 - Najpierw zrzucany jest monitor pod kursorem (GDI `BitBlt` skomponowanego pulpitu, ok. 30 ms dla 1080p) i od razu pokazuje się
   jego nakładka; pozostałe monitory dochodzą chwilę później. Okna nakładki powstają jako „ukryte w DWM” (cloak) i odsłaniają się
   dopiero po namalowaniu pierwszej klatki — bez mignięcia. Po starcie aplikacja raz „rozgrzewa” niewidoczną nakładkę poza ekranem,
@@ -131,6 +145,19 @@ flowchart LR
 - Klikanie okien: `EnumWindows` + `DWMWA_EXTENDED_FRAME_BOUNDS` (prawdziwe granice bez niewidzialnej ramki), z pominięciem okien
   ukrytych, przezroczystych dla myszy i nakładek typu overlay.
 - Wszystko w fizycznych pikselach; WPF działa w trybie Per-Monitor-V2 DPI.
+</details>
+
+<details>
+<summary><b>Tryb Retina</b></summary>
+
+- Monitory, ich natywna rozdzielczość i bieżące skalowanie pochodzą z API CCD (`QueryDisplayConfig`, `DisplayConfigGetDeviceInfo`);
+  tryb 2× jest szukany na liście trybów sterownika (tam pojawiają się tryby DSR / VSR).
+- Każdy nowy tryb jest najpierw sprawdzany przez `CDS_TEST`, potem wszystkie monitory są przygotowywane z `CDS_NORESET`
+  i przełączane naraz. Pozycje monitorów są przeliczane tak, żeby stykające się ekrany dalej stykały się tym samym bokiem
+  (główny zostaje w 0,0); układów, których nie da się zachować, aplikacja nie zgaduje — po prostu odmawia.
+- Skalowanie ustawiane jest dla każdego monitora przez `DisplayConfigSetDeviceInfo` — tym samym wywołaniem, którego używają
+  Ustawienia Windows — więc 100 % zmienia się w 200 %, 125 % w 250 %… i nic na ekranie nie zmienia wielkości.
+- Poprzednie tryby są zapamiętywane; wyłączenie (albo brak potwierdzenia w 15 s) przywraca je dokładnie.
 </details>
 
 <details>

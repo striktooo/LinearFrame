@@ -75,9 +75,10 @@ public partial class App : Application
         StartUpdates(args);
 
         if (!AppPaths.IsDevBuild && Settings.RunAtStartup) Autostart.Apply(true);
+        if (!AppPaths.IsDevBuild) StartMenuShortcut.Ensure(Settings);
 
         var warm = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
-        warm.Tick += (_, _) => { warm.Stop(); CaptureSession.Prewarm(Settings); };
+        warm.Tick += (_, _) => { warm.Stop(); CaptureSession.Prewarm(Settings); _ = RefreshRetinaAsync(); };
         warm.Start();
 
         bool trayStart = args.Contains("--tray");
@@ -94,8 +95,7 @@ public partial class App : Application
             else OpenMedia(files[0], edit: args.Contains("--trim") || args.Contains("--cut"), cut: args.Contains("--cut"));
             return;
         }
-        if (args.Contains("--capture")) { StartRegionCapture(); return; }
-        if (args.Contains("--capture-full")) { StartFullscreenCapture(); return; }
+        if (args.Contains("--capture") || args.Contains("--capture-full")) { StartRegionCapture(); return; }
         if (args.Contains("--settings")) { ShowMain("settings"); return; }
         if (args.Contains("--exit")) { Quit(); return; }
         if (startup && trayStart)
@@ -122,7 +122,80 @@ public partial class App : Application
             var area = Marshal.PtrToStringUni(lParam);
             if (area == "ImmersiveColorSet") Dispatcher.InvokeAsync(Theme.Refresh);
         }
+        if (msg == WM_DISPLAYCHANGE) Dispatcher.InvokeAsync(() => _ = RefreshRetinaAsync(), DispatcherPriority.Background);
         return false;
+    }
+
+    // ------------------------------------------------------------------ Retina mode
+
+    private const int WM_DISPLAYCHANGE = 0x007E;
+    private bool _retinaBusy;
+    private RetinaStatus? _retina;
+    private Task? _retinaRefresh;
+
+    /// <summary>Monitor modes changed (by us or by anyone else) - or the cached state below was refreshed.</summary>
+    public event Action? RetinaChanged;
+
+    public bool RetinaBusy => _retinaBusy;
+
+    /// <summary>Last known monitor state (asking the driver takes ~100 ms, so it's refreshed in the background).</summary>
+    public RetinaStatus RetinaState => _retina ??= Retina.Query();
+    public bool HasRetinaState => _retina != null;
+
+    public Task RefreshRetinaAsync()
+    {
+        if (_retinaRefresh is { IsCompleted: false }) { _retinaAgain = true; return _retinaRefresh; }
+        return _retinaRefresh = RefreshCore();
+
+        async Task RefreshCore()
+        {
+            do
+            {
+                _retinaAgain = false;
+                _retina = await Task.Run(Retina.Query);
+                RetinaChanged?.Invoke();
+            } while (_retinaAgain);
+        }
+    }
+
+    private bool _retinaAgain;
+
+    /// <summary>
+    /// Switches Retina mode on or off for all monitors that support it. When switching on, a 15-second
+    /// "Keep?" prompt follows; without an answer everything goes back automatically.
+    /// </summary>
+    public async Task<bool> SetRetinaAsync(bool on)
+    {
+        if (_retinaBusy) return false;
+        _retinaBusy = true;
+        RetinaChanged?.Invoke();
+        try
+        {
+            var r = await Task.Run(() => on ? Retina.Enable(Settings) : Retina.Disable(Settings));
+            Settings.Save();
+            if (!r.Ok)
+            {
+                Log.Warn($"Retina {(on ? "on" : "off")} failed: {r.Error}");
+                MessageBox.Show(r.Error ?? L.T("Retina.Failed"), "LinearFrame", MessageBoxButton.OK, MessageBoxImage.Information);
+                return false;
+            }
+            if (!on) return true;
+            await RefreshRetinaAsync();
+            if (await RetinaConfirm.AskAsync()) return true;
+            await Task.Run(() => Retina.Disable(Settings));
+            Settings.Save();
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Retina switch failed", ex);
+            return false;
+        }
+        finally
+        {
+            _retinaBusy = false;
+            await RefreshRetinaAsync();
+        }
     }
 
     // ------------------------------------------------------------------ tray
@@ -134,7 +207,7 @@ public partial class App : Application
         int px = Native.GetSystemMetricsForDpi(Native.SM_CXSMICON, dpi);
         if (px <= 0) px = 16;
         var icon = AppIconArt.CreateHIcon(px);
-        _tray = new TrayIcon(_msg.Handle, icon, L.F("Tray.Tip", Settings.RegionHotkey));
+        _tray = new TrayIcon(_msg.Handle, icon, L.F("Tray.Tip", ShortcutText));
         _tray.Click += () => ShowMain(null);
         _tray.ContextMenu += ShowTrayMenu;
         _tray.BalloonClick += () => ShowMain("settings");
@@ -151,7 +224,9 @@ public partial class App : Application
             m.Separator();
         }
         m.Add($"{L.T("Tray.Region")}\t{Settings.RegionHotkey}", () => StartRegionCapture(180));
-        m.Add($"{L.T("Tray.Fullscreen")}\t{Settings.FullscreenHotkey}", () => StartFullscreenCapture(180));
+        var retina = RetinaState;
+        if (retina.CanToggle)
+            m.Add(L.T("Tray.Retina"), () => _ = SetRetinaAsync(!retina.IsOn), isChecked: retina.IsOn, enabled: !_retinaBusy);
         m.Separator();
         m.Add(L.T("Tray.OpenMedia"), OpenMediaDialog);
         m.Add(L.T("Tray.Folder"), OpenScreenshotFolder);
@@ -161,6 +236,7 @@ public partial class App : Application
         m.Separator();
         m.Add(L.T("Tray.Quit"), Quit);
         m.Show(_msg.Handle, x, y);
+        _ = RefreshRetinaAsync(); // e.g. DSR was just switched on in the driver - the next menu shows it
     }
 
     // ------------------------------------------------------------------ hotkeys
@@ -171,11 +247,17 @@ public partial class App : Application
         _hotkeys.UnregisterAll();
         var failed = new List<string>();
         if (!_hotkeys.Register(Settings.RegionHotkey, () => StartRegionCapture())) failed.Add(Settings.RegionHotkey.ToString());
-        if (!_hotkeys.Register(Settings.FullscreenHotkey, () => StartFullscreenCapture())) failed.Add(Settings.FullscreenHotkey.ToString());
-        _tray?.SetTip(L.F("Tray.Tip", Settings.RegionHotkey));
+        if (!Settings.RegionHotkey2.SameAs(Settings.RegionHotkey)
+            && !_hotkeys.Register(Settings.RegionHotkey2, () => StartRegionCapture())) failed.Add(Settings.RegionHotkey2.ToString());
+        _tray?.SetTip(L.F("Tray.Tip", ShortcutText));
         if (failed.Count > 0 && showErrors)
             _tray?.ShowInfo("LinearFrame", L.F("Hotkey.Failed", string.Join(", ", failed)));
     }
+
+    /// <summary>"End" or "End / Mouse 5" - how the capture shortcut(s) read in texts.</summary>
+    public string ShortcutText => Settings.RegionHotkey2.IsEmpty || Settings.RegionHotkey2.SameAs(Settings.RegionHotkey)
+        ? Settings.RegionHotkey.ToString()
+        : $"{Settings.RegionHotkey} / {Settings.RegionHotkey2}";
 
     public void SuspendHotkeys(bool suspend)
     {
@@ -205,17 +287,6 @@ public partial class App : Application
             t.Start();
         }
         else CaptureSession.StartRegion(Settings);
-    }
-
-    public void StartFullscreenCapture(int delayMs = 0)
-    {
-        if (delayMs > 0)
-        {
-            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(delayMs) };
-            t.Tick += (_, _) => { t.Stop(); CaptureSession.CaptureFullscreen(Settings); };
-            t.Start();
-        }
-        else CaptureSession.CaptureFullscreen(Settings);
     }
 
     public void ShowMain(string? page)

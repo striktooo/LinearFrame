@@ -34,9 +34,21 @@ Press **Ctrl + Shift + 4** and the screen freezes and dims. **Drag** to select a
 exactly that window. Press **Ctrl + C** (or Enter): the shot goes to the clipboard *and* is saved as a PNG in `Pictures\LinearFrame`.
 A floating thumbnail slides into the corner — click it to edit, drag it straight into a chat or an e-mail.
 
-- **Ctrl + Shift + 3** captures the whole screen; both shortcuts can be changed.
+- Bind it to whatever suits you: a combination, **a single key** (End, F13, PrintScreen…) or **a side mouse button**
+  (Mouse 4 / Mouse 5) — plus an optional second shortcut. Click the empty desktop to grab a whole monitor.
 - Pick the output size right in the toolbar: **Original, Full HD, 2K, 4K or 8K**.
 - Multi-monitor and per-monitor-DPI aware; captures real physical pixels. Arrow keys nudge the selection pixel by pixel.
+
+### ✨ Retina mode — Mac-sharp screenshots on any monitor
+A small button screenshots crisp on a Mac because macOS draws everything at **2×** (Retina). LinearFrame switches Windows into
+exactly that with one click (*Settings → Screenshot quality*): the desktop renders at twice the resolution — e.g. 3840×2160 at
+200 % scaling on a 1920×1080 monitor — and the graphics card scales it down to your panel, so everything keeps its size.
+Every app now draws its text, icons and vector UI with four times as many real pixels, and every screenshot carries that detail.
+**Real rendering — no upscaling, no AI.**
+
+Needs NVIDIA DSR (4.00x, legacy scaling) or AMD Virtual Super Resolution; the app tells you where to switch it on. Your monitor
+arrangement is kept, and a *"Keep?"* prompt reverts everything by itself after 15 seconds. Quick toggle in the tray menu
+(e.g. off for games).
 
 ### ✏️ Markup — and frames that grow
 ![Editor](docs/images/editor.png)
@@ -89,12 +101,12 @@ video files also get **Trim with LinearFrame** in the classic context menu.
 
 | Where | Keys |
 |---|---|
-| Anywhere | **Ctrl+Shift+4** area · **Ctrl+Shift+3** full screen |
+| Anywhere | **Ctrl+Shift+4** capture (or your own key / mouse button) |
 | While selecting | **Ctrl+C / Enter** copy & save · **E** edit · **Ctrl+S** save as · **Esc** cancel · **arrows** nudge · right-click clears |
 | Editor | **V P H A L R O T N B** tools · **C** crop & extend · **Ctrl+Z / Ctrl+Shift+Z** · **Ctrl+C** copy · **Ctrl+S** done |
 | Player | **Space** pause · **← →** 5 s · **J L** 10 s · **, .** frame step · **↑ ↓** volume · **M** mute · **F** full screen · **E** edit · **X** trim/cut · **I O** set in/out |
 
-Command line: `LinearFrame.exe video.mp4` · `--trim video.mp4` · `--cut video.mp4` · `--capture` · `--capture-full` · `--settings` · `--exit`
+Command line: `LinearFrame.exe video.mp4` · `--trim video.mp4` · `--cut video.mp4` · `--capture` · `--settings` · `--exit`
 
 ---
 
@@ -122,7 +134,8 @@ flowchart LR
 <details>
 <summary><b>Capture pipeline</b></summary>
 
-- `RegisterHotKey` on a hidden window — zero polling, zero CPU while waiting.
+- `RegisterHotKey` on a hidden window — zero polling, zero CPU while waiting. Side mouse buttons need a `WH_MOUSE_LL` hook; it exists
+  only while a mouse button is bound, runs on its own thread (the mouse never waits for the UI) and swallows just that click.
 - The monitor under the cursor is captured first (GDI `BitBlt` of the DWM-composed desktop, ~30 ms for 1080p) and its overlay
   is shown immediately; the other monitors follow a moment later. Overlay windows are created **DWM-cloaked** and revealed only
   after their first frame is painted, so there's no flash. A hidden off-screen overlay is rendered once at start-up to warm up
@@ -130,6 +143,19 @@ flowchart LR
 - Click-a-window uses `EnumWindows` + `DWMWA_EXTENDED_FRAME_BOUNDS` (real bounds without the invisible resize border),
   skipping cloaked, click-through and fully transparent overlay windows.
 - Everything is in physical pixels; WPF runs Per-Monitor-V2 DPI aware.
+</details>
+
+<details>
+<summary><b>Retina mode</b></summary>
+
+- Monitors, their native panel resolution and current scaling come from the CCD API (`QueryDisplayConfig`,
+  `DisplayConfigGetDeviceInfo`); the 2× desktop mode is looked up in the driver's mode list (that's where DSR / VSR modes appear).
+- Every new mode is validated with `CDS_TEST` first, then all monitors are staged with `CDS_NORESET` and switched in one go.
+  Monitor positions are recomputed so that screens that touched still touch on the same side (the primary stays at 0,0);
+  layouts that can't be kept are refused instead of guessed.
+- Scaling is set per monitor through `DisplayConfigSetDeviceInfo` — the same call the Windows Settings app uses —
+  so 100 % becomes 200 %, 125 % becomes 250 %… and nothing changes size on screen.
+- The previous modes are saved; switching off (or not confirming within 15 s) restores them exactly.
 </details>
 
 <details>

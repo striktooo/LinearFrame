@@ -8,15 +8,26 @@ public enum ExportSize { Original, FullHD, QHD, UHD4K, UHD8K }
 
 public enum ImageFormatKind { Png, Jpg }
 
+/// <summary>Mouse buttons that can trigger a shortcut (side buttons alone, the wheel button only with a modifier).</summary>
+public enum HotMouse { None, Middle, XButton1, XButton2 }
+
 public sealed class HotkeyGesture
 {
     public ModifierKeys Modifiers { get; set; }
     public Key Key { get; set; }
+    public HotMouse Mouse { get; set; }
 
     public HotkeyGesture() { }
     public HotkeyGesture(ModifierKeys modifiers, Key key) { Modifiers = modifiers; Key = key; }
+    public HotkeyGesture(ModifierKeys modifiers, HotMouse mouse) { Modifiers = modifiers; Mouse = mouse; }
 
-    [JsonIgnore] public bool IsEmpty => Key == Key.None;
+    [JsonIgnore] public bool IsEmpty => Key == Key.None && Mouse == HotMouse.None;
+    [JsonIgnore] public bool IsMouse => Mouse != HotMouse.None;
+    /// <summary>A key on its own (e.g. End) - it stops doing its usual job in other apps.</summary>
+    [JsonIgnore] public bool IsLoneKey => !IsMouse && Key != Key.None && Modifiers == ModifierKeys.None;
+
+    public bool SameAs(HotkeyGesture? other) =>
+        other != null && !IsEmpty && other.Modifiers == Modifiers && other.Mouse == Mouse && (IsMouse || other.Key == Key);
 
     public uint Win32Modifiers
     {
@@ -41,9 +52,17 @@ public sealed class HotkeyGesture
         if (Modifiers.HasFlag(ModifierKeys.Alt)) parts.Add("Alt");
         if (Modifiers.HasFlag(ModifierKeys.Shift)) parts.Add("Shift");
         if (Modifiers.HasFlag(ModifierKeys.Windows)) parts.Add("Win");
-        parts.Add(KeyName(Key));
+        parts.Add(IsMouse ? MouseName(Mouse) : KeyName(Key));
         return string.Join(" + ", parts);
     }
+
+    public static string MouseName(HotMouse m) => m switch
+    {
+        HotMouse.XButton1 => L.T("Hotkey.Mouse4"),
+        HotMouse.XButton2 => L.T("Hotkey.Mouse5"),
+        HotMouse.Middle => L.T("Hotkey.MouseMiddle"),
+        _ => "",
+    };
 
     public static string KeyName(Key key) => key switch
     {
@@ -65,17 +84,33 @@ public sealed class HotkeyGesture
         Key.Back => "Backspace",
         Key.Next => "PageDown",
         Key.Prior => "PageUp",
+        Key.Scroll => "ScrollLock",
+        Key.Capital => "CapsLock",
+        Key.Apps => "Menu",
         _ => key.ToString()
     };
 
-    public HotkeyGesture Clone() => new(Modifiers, Key);
+    public HotkeyGesture Clone() => new() { Modifiers = Modifiers, Key = Key, Mouse = Mouse };
+}
+
+/// <summary>One monitor's mode before Retina mode was switched on, so it can be put back exactly.</summary>
+public sealed class SavedDisplay
+{
+    public string Device { get; set; } = "";
+    public int Width { get; set; }
+    public int Height { get; set; }
+    public int Frequency { get; set; }
+    public int X { get; set; }
+    public int Y { get; set; }
+    public int ScalePercent { get; set; }
 }
 
 public sealed class AppSettings
 {
     public string Language { get; set; } = "auto";              // auto | pl | en
     public HotkeyGesture RegionHotkey { get; set; } = new(ModifierKeys.Control | ModifierKeys.Shift, Key.D4);
-    public HotkeyGesture FullscreenHotkey { get; set; } = new(ModifierKeys.Control | ModifierKeys.Shift, Key.D3);
+    /// <summary>Optional second shortcut for the same thing - e.g. End on the keyboard and the side button on the mouse.</summary>
+    public HotkeyGesture RegionHotkey2 { get; set; } = new();
 
     public bool CopyToClipboard { get; set; } = true;
     public bool AutoSave { get; set; } = true;
@@ -88,6 +123,10 @@ public sealed class AppSettings
     public bool PlaySound { get; set; } = true;
     public bool RunAtStartup { get; set; } = true;
     public bool FirstRunDone { get; set; }
+    public bool StartMenuShortcutDone { get; set; }
+
+    /// <summary>Monitor modes from before Retina mode was switched on (null while it's off).</summary>
+    public List<SavedDisplay>? RetinaRestore { get; set; }
 
     public bool AutoUpdate { get; set; } = true;
     public DateTime? LastUpdateCheckUtc { get; set; }
@@ -99,7 +138,7 @@ public sealed class AppSettings
 
     [JsonIgnore] public string ScreenshotFolder => string.IsNullOrWhiteSpace(SaveFolder) ? AppPaths.DefaultScreenshotDir : SaveFolder!;
 
-    private static readonly JsonSerializerOptions Json = new()
+    internal static readonly JsonSerializerOptions Json = new()
     {
         WriteIndented = true,
         Converters = { new JsonStringEnumConverter() },
@@ -116,7 +155,7 @@ public sealed class AppSettings
                 if (s != null)
                 {
                     s.RegionHotkey ??= new(ModifierKeys.Control | ModifierKeys.Shift, Key.D4);
-                    s.FullscreenHotkey ??= new(ModifierKeys.Control | ModifierKeys.Shift, Key.D3);
+                    s.RegionHotkey2 ??= new();
                     s.RecentMedia ??= new();
                     return s;
                 }

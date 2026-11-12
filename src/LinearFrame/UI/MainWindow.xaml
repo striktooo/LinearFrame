@@ -199,17 +199,57 @@
                             <Border Style="{StaticResource Card.Separator}"/>
                             <Grid Style="{StaticResource Card.Row}">
                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                    <ui:IconView Icon="fullscreen" Width="17" Height="17" Foreground="{DynamicResource Brush.Accent}"/>
-                                    <TextBlock Text="{core:Loc Settings.FullHotkey}" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                                    <ui:IconView Icon="mouse" Width="17" Height="17" Foreground="{DynamicResource Brush.Accent}"/>
+                                    <TextBlock Text="{core:Loc Settings.RegionHotkey2}" Margin="10,0,0,0" VerticalAlignment="Center"/>
                                 </StackPanel>
-                                <ui:HotkeyBox x:Name="FullHotkeyBox" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                <ui:HotkeyBox x:Name="RegionHotkey2Box" AllowClear="True" HorizontalAlignment="Right" VerticalAlignment="Center"/>
                             </Grid>
                         </StackPanel>
                     </Border>
-                    <TextBlock Text="{core:Loc Settings.HotkeyHint}" Style="{StaticResource Text.Caption}" Margin="4,7,0,24"/>
+                    <TextBlock Text="{core:Loc Settings.HotkeyHint}" Style="{StaticResource Text.Caption}" TextWrapping="Wrap" TextTrimming="None" Margin="4,7,0,0"/>
+                    <Grid x:Name="HotkeyWarn" Margin="4,8,0,0" Visibility="Collapsed">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <ui:IconView Icon="info" Width="15" Height="15" Foreground="{DynamicResource Brush.Accent}" VerticalAlignment="Top" Margin="0,1,7,0"/>
+                        <TextBlock x:Name="HotkeyWarnText" Grid.Column="1" Style="{StaticResource Text.Caption}" TextWrapping="Wrap" TextTrimming="None"/>
+                        <Button x:Name="HotkeyWarnButton" Grid.Column="2" Style="{StaticResource Btn.Secondary}" Content="{core:Loc Settings.OpenKeyboardSettings}"
+                                Click="KeyboardSettings_Click" Margin="12,0,0,0" Padding="12,4" VerticalAlignment="Center" Visibility="Collapsed"/>
+                    </Grid>
+
+                    <!-- Screenshot quality: Retina mode -->
+                    <TextBlock Text="{core:Loc Settings.Quality}" Style="{StaticResource Text.Headline}" Margin="4,24,0,8"/>
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <Grid Style="{StaticResource Card.Row}">
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <ui:IconView Icon="sparkle" Width="17" Height="17" Foreground="{DynamicResource Brush.Accent}"/>
+                                    <TextBlock Text="{core:Loc Retina.Title}" Margin="10,0,0,0" VerticalAlignment="Center" FontWeight="Medium"/>
+                                </StackPanel>
+                                <CheckBox x:Name="RetinaToggle" Style="{StaticResource Toggle.Switch}" HorizontalAlignment="Right" Click="RetinaToggle_Click"/>
+                            </Grid>
+                            <StackPanel x:Name="RetinaMonitors"/>
+                            <StackPanel x:Name="RetinaSetup" Visibility="Collapsed">
+                                <Border Style="{StaticResource Card.Separator}"/>
+                                <Grid Style="{StaticResource Card.Row}" Margin="16,11,16,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="RetinaSetupText" Style="{StaticResource Text.Caption}" FontSize="12.5" TextWrapping="Wrap" TextTrimming="None"
+                                               Margin="0,0,14,0" VerticalAlignment="Center"/>
+                                    <Button x:Name="RetinaSetupButton" Grid.Column="1" Style="{StaticResource Btn.Secondary}" Click="RetinaSetup_Click"
+                                            VerticalAlignment="Center" Padding="12,5"/>
+                                </Grid>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                    <TextBlock Text="{core:Loc Retina.Hint}" Style="{StaticResource Text.Caption}" TextWrapping="Wrap" TextTrimming="None" Margin="4,7,0,0"/>
 
                     <!-- Saving -->
-                    <TextBlock Text="{core:Loc Settings.Saving}" Style="{StaticResource Text.Headline}" Margin="4,0,0,8"/>
+                    <TextBlock Text="{core:Loc Settings.Saving}" Style="{StaticResource Text.Headline}" Margin="4,24,0,8"/>
                     <Border Style="{StaticResource Card}">
                         <StackPanel>
                             <Grid Style="{StaticResource Card.Row}">

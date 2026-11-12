@@ -112,20 +112,6 @@ public sealed class CaptureSession
         }
     }
 
-    public static void CaptureFullscreen(AppSettings s)
-    {
-        if (Current != null) return;
-        try
-        {
-            Native.GetCursorPos(out var p);
-            var monitors = MonitorInfo.All();
-            var m = monitors.FirstOrDefault(x => x.Contains(p.X, p.Y)) ?? monitors.FirstOrDefault(x => x.Primary) ?? monitors[0];
-            var pb = ScreenCapturer.Capture(m.Bounds);
-            Deliver(s, pb, s.DefaultExportSize, CaptureAction.Copy, m);
-        }
-        catch (Exception ex) { Log.Error("Fullscreen capture failed", ex); }
-    }
-
     private CaptureOverlayWindow AddOverlay(MonitorInfo m, PixelBuffer pixels, bool activate, bool show)
     {
         var bmp = pixels.ToBitmap();

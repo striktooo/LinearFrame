@@ -267,13 +267,20 @@ public static class Hud
     }
 }
 
-/// <summary>Click, then press a key combination to record a global shortcut.</summary>
+/// <summary>
+/// Click, then press what should trigger the action: a combination (Ctrl+Shift+4), a single key (End, F13, PrintScreen…)
+/// or a side mouse button. Esc cancels; Backspace clears an optional shortcut.
+/// </summary>
 public sealed class HotkeyBox : Button
 {
     private HotkeyGesture _gesture = new();
     private bool _recording;
+    private Window? _window;
 
     public event Action<HotkeyGesture>? GestureChanged;
+
+    /// <summary>Optional shortcut: Backspace removes it.</summary>
+    public bool AllowClear { get; set; }
 
     public HotkeyGesture Gesture
     {
@@ -292,7 +299,7 @@ public sealed class HotkeyBox : Button
 
     private void UpdateText()
     {
-        if (!_recording) Content = _gesture.ToString();
+        if (!_recording) Content = _gesture.IsEmpty && AllowClear ? L.T("Hotkey.Add") : _gesture.ToString();
     }
 
     protected override void OnClick()
@@ -303,10 +310,17 @@ public sealed class HotkeyBox : Button
         App.Instance?.SuspendHotkeys(true);
         Focus();
         Keyboard.Focus(this);
+        _window = Window.GetWindow(this);
+        if (_window != null) _window.PreviewMouseDown += OnWindowMouseDown;
     }
 
     private static bool IsModifier(Key k) => k is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift
         or Key.LeftAlt or Key.RightAlt or Key.LWin or Key.RWin;
+
+    /// <summary>Keys you type with. On their own they'd stop working everywhere else, so they need Ctrl/Alt/Shift/Win.</summary>
+    internal static bool IsTypingKey(Key k) => k is >= Key.A and <= Key.Z or >= Key.D0 and <= Key.D9
+        or >= Key.NumPad0 and <= Key.Divide or >= Key.Oem1 and <= Key.Oem102
+        or Key.Space or Key.Enter or Key.Tab or Key.Back;
 
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
@@ -315,6 +329,7 @@ public sealed class HotkeyBox : Button
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         if (key == Key.Escape) { Stop(); return; }
         var mods = Keyboard.Modifiers;
+        if (key == Key.Back && mods == ModifierKeys.None && AllowClear) { Commit(new HotkeyGesture()); return; }
         if (IsModifier(key))
         {
             var parts = new List<string>();
@@ -326,13 +341,34 @@ public sealed class HotkeyBox : Button
             Content = string.Join(" + ", parts);
             return;
         }
-        bool standalone = key is >= Key.F1 and <= Key.F24 or Key.Snapshot or Key.Pause or Key.Scroll or Key.Insert;
-        if (mods == ModifierKeys.None && !standalone)
+        if (key is Key.None or Key.ImeProcessed or Key.DeadCharProcessed) return;
+        if (mods == ModifierKeys.None && IsTypingKey(key))
         {
-            Content = L.T("Hotkey.Press");
+            Content = L.F("Hotkey.NeedsModifier", HotkeyGesture.KeyName(key));
             return;
         }
         Commit(new HotkeyGesture(mods, key));
+    }
+
+    private void OnWindowMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (!_recording) return;
+        var button = e.ChangedButton switch
+        {
+            MouseButton.XButton1 => HotMouse.XButton1,
+            MouseButton.XButton2 => HotMouse.XButton2,
+            MouseButton.Middle => HotMouse.Middle,
+            _ => HotMouse.None,
+        };
+        if (button == HotMouse.None) return; // a normal click elsewhere simply ends recording (focus moves)
+        e.Handled = true;
+        var mods = Keyboard.Modifiers;
+        if (button == HotMouse.Middle && mods == ModifierKeys.None)
+        {
+            Content = L.T("Hotkey.MiddleNeedsModifier");
+            return;
+        }
+        Commit(new HotkeyGesture(mods, button));
     }
 
     protected override void OnPreviewKeyUp(KeyEventArgs e)
@@ -363,6 +399,7 @@ public sealed class HotkeyBox : Button
     private void Stop()
     {
         _recording = false;
+        if (_window != null) { _window.PreviewMouseDown -= OnWindowMouseDown; _window = null; }
         UpdateText();
         App.Instance?.SuspendHotkeys(false);
     }

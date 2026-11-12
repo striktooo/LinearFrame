@@ -11,13 +11,21 @@ Aplikacja działa w tle. Jej ikonka siedzi w zasobniku obok zegara (na Windows 1
 możesz ją przeciągnąć na pasek, żeby była zawsze widoczna).
 
 SKRÓTY
-  Ctrl+Shift+4   zaznacz obszar (kliknij okno, żeby złapać całe okno; przeciągnij, żeby zaznaczyć kawałek)
-  Ctrl+Shift+3   cały ekran
+  Ctrl+Shift+4   zrzut: przeciągnij, żeby zaznaczyć kawałek; kliknij okno, żeby złapać całe okno;
+                 kliknij pusty pulpit, żeby złapać cały monitor
   Po zaznaczeniu:  Ctrl+C / Enter = kopiuj i zapisz,  E = edytor (strzałki, tekst, zamazywanie, kadr 16:9, 4K…),
                    Ctrl+S = zapisz jako,  Esc = anuluj,  strzałki = przesuń zaznaczenie
-  Skróty zmienisz w Ustawieniach.
+  W Ustawieniach ustawisz dowolny skrót: kombinację, jeden klawisz (np. End) albo boczny przycisk myszy (Mysz 4 / Mysz 5).
 
 Zrzuty zapisują się w folderze Obrazy\LinearFrame i trafiają do schowka.
+
+TRYB RETINA (OSTRE ZRZUTY JAK NA MACU)
+  Ustawienia → Jakość zrzutów → Tryb Retina. Windows rysuje wtedy wszystko w 2× wyższej rozdzielczości (np. 3840×2160
+  ze skalowaniem 200 % na monitorze Full HD), a karta graficzna pokazuje to w tym samym rozmiarze. Zrzuty mają 2× więcej
+  prawdziwych pikseli w każdą stronę — bez powiększania i bez AI.
+  Wymaga jednorazowego włączenia DSR w Panelu sterowania NVIDIA (Zarządzaj ustawieniami 3D → DSR – Współczynniki → 4,00x
+  „starsze skalowanie”, DSR – Gładkość 0 %) albo Wirtualnej super rozdzielczości w AMD Software.
+  Na czas gier wyłączysz go w menu ikony w zasobniku.
 
 ODTWARZACZ
   Przeciągnij film/muzykę na okno LinearFrame albo otwórz plik przez „Otwórz za pomocą”.
@@ -33,9 +41,10 @@ FOLDER „engine”
   libmpv-2.dll (silnik odtwarzania) i ffmpeg.exe (przycinanie) — nie usuwaj go.
 
 ODINSTALOWANIE
-  W Ustawieniach wyłącz „Uruchamiaj razem z Windows”, zakończ aplikację (ikonka w zasobniku → Zakończ)
-  i usuń folder. Ustawienia są w %APPDATA%\LinearFrame.
+  W Ustawieniach wyłącz „Uruchamiaj razem z Windows” (i tryb Retina, jeśli go używasz), zakończ aplikację
+  (ikonka w zasobniku → Zakończ), usuń folder i skrót „LinearFrame” z menu Start. Ustawienia są w %APPDATA%\LinearFrame.
 
 -------------------------------------------------------------------------------------------------
-LinearFrame — screenshots & video, simply.  Unzip, run LinearFrame.exe.  Ctrl+Shift+4 = capture an area.
+LinearFrame — screenshots & video, simply.  Unzip, run LinearFrame.exe.  Ctrl+Shift+4 = capture (any key or mouse button
+can be set in Settings).  Settings → Screenshot quality → Retina mode = Mac-sharp 2× screenshots (needs NVIDIA DSR / AMD VSR).
 Updates install themselves.  Open source (MIT): https://github.com/striktooo/LinearFrame

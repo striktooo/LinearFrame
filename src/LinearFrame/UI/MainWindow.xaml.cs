@@ -49,11 +49,20 @@ public partial class MainWindow : Window
         NavScreens.IsChecked = true;
 
         Loaded += (_, _) => { LoadShots(); StartWatcher(); };
-        if (App.Instance != null) App.Instance.UpdateStateChanged += OnUpdateState;
+        if (App.Instance != null)
+        {
+            App.Instance.UpdateStateChanged += OnUpdateState;
+            App.Instance.RetinaChanged += OnRetinaChanged;
+        }
         UpdateUpdatesUi();
+        RefreshRetinaUi();
         Closed += (_, _) =>
         {
-            if (App.Instance != null) App.Instance.UpdateStateChanged -= OnUpdateState;
+            if (App.Instance != null)
+            {
+                App.Instance.UpdateStateChanged -= OnUpdateState;
+                App.Instance.RetinaChanged -= OnRetinaChanged;
+            }
             _watcher?.Dispose();
             _thumbCts?.Cancel();
             ShotsList.Items.Clear();
@@ -62,9 +71,11 @@ public partial class MainWindow : Window
 
     private void UpdateTexts()
     {
-        ScreensSubtitle.Text = L.F("Screens.Subtitle", _s.RegionHotkey, _s.FullscreenHotkey);
-        ShotsEmptyHint.Text = L.F("Screens.EmptyHint", _s.RegionHotkey);
-        WelcomeBody.Text = L.F("Welcome.Body", _s.RegionHotkey);
+        string keys = App.Instance?.ShortcutText ?? _s.RegionHotkey.ToString();
+        ScreensSubtitle.Text = L.F("Screens.Subtitle", keys);
+        ShotsEmptyHint.Text = L.F("Screens.EmptyHint", keys);
+        WelcomeBody.Text = L.F("Welcome.Body", keys);
+        UpdateHotkeyWarning();
     }
 
     public void Navigate(string page)
@@ -84,6 +95,7 @@ public partial class MainWindow : Window
         ScreensPage.Visibility = tag == "screens" ? Visibility.Visible : Visibility.Collapsed;
         PlayerPage.Visibility = tag == "player" ? Visibility.Visible : Visibility.Collapsed;
         SettingsPage.Visibility = tag == "settings" ? Visibility.Visible : Visibility.Collapsed;
+        if (tag == "settings") _ = App.Instance?.RefreshRetinaAsync(); // DSR may have been switched on in the driver meanwhile
     }
 
     // =============================================================== screenshots
@@ -352,7 +364,7 @@ public partial class MainWindow : Window
     {
         _loadingSettings = true;
         RegionHotkeyBox.Gesture = _s.RegionHotkey.Clone();
-        FullHotkeyBox.Gesture = _s.FullscreenHotkey.Clone();
+        RegionHotkey2Box.Gesture = _s.RegionHotkey2.Clone();
         ClipboardToggle.IsChecked = _s.CopyToClipboard;
         AutoSaveToggle.IsChecked = _s.AutoSave;
         FolderText.Text = _s.ScreenshotFolder;
@@ -394,12 +406,14 @@ public partial class MainWindow : Window
         RegionHotkeyBox.GestureChanged += g =>
         {
             _s.RegionHotkey = g;
+            if (g.SameAs(_s.RegionHotkey2)) { _s.RegionHotkey2 = new(); RegionHotkey2Box.Gesture = new(); }
             App.Instance?.SettingsChanged(hotkeysChanged: true);
             UpdateTexts();
         };
-        FullHotkeyBox.GestureChanged += g =>
+        RegionHotkey2Box.GestureChanged += g =>
         {
-            _s.FullscreenHotkey = g;
+            _s.RegionHotkey2 = g.SameAs(_s.RegionHotkey) ? new() : g;
+            RegionHotkey2Box.Gesture = _s.RegionHotkey2.Clone();
             App.Instance?.SettingsChanged(hotkeysChanged: true);
             UpdateTexts();
         };
@@ -450,6 +464,142 @@ public partial class MainWindow : Window
     }
 
     private void GitHub_Click(object sender, RoutedEventArgs e) => ShellUtil.Open(ProjectUrl);
+
+    private void UpdateHotkeyWarning()
+    {
+        if (HotkeyWarn == null) return;
+        string? text = null;
+        bool openSettings = false;
+        foreach (var g in new[] { _s.RegionHotkey, _s.RegionHotkey2 })
+        {
+            if (g.IsEmpty) continue;
+            if (!g.IsMouse && g.Key == Key.Snapshot && SnippingToolOnPrintScreen())
+            {
+                text = L.T("Settings.PrintScreenWarn");
+                openSettings = true;
+                break;
+            }
+            if (g.IsLoneKey) text ??= L.F("Settings.LoneKeyWarn", g);
+        }
+        HotkeyWarn.Visibility = text == null ? Visibility.Collapsed : Visibility.Visible;
+        HotkeyWarnText.Text = text ?? "";
+        HotkeyWarnButton.Visibility = openSettings ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>Windows 11 opens the Snipping Tool on PrintScreen unless that's switched off.</summary>
+    private static bool SnippingToolOnPrintScreen()
+    {
+        try
+        {
+            using var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Control Panel\Keyboard");
+            return k?.GetValue("PrintScreenKeyForSnippingEnabled") is int v ? v != 0 : Environment.OSVersion.Version.Build >= 22621;
+        }
+        catch { return false; }
+    }
+
+    private void KeyboardSettings_Click(object sender, RoutedEventArgs e) => ShellUtil.Open("ms-settings:easeofaccess-keyboard");
+
+    // =============================================================== Retina mode
+
+    private void OnRetinaChanged() => Dispatcher.InvokeAsync(RefreshRetinaUi, DispatcherPriority.Background);
+
+    protected override void OnActivated(EventArgs e)
+    {
+        base.OnActivated(e);
+        // back from the NVIDIA / AMD panel? show the new 2× modes straight away
+        if (SettingsPage.Visibility == Visibility.Visible) _ = App.Instance?.RefreshRetinaAsync();
+    }
+
+    private RetinaStatus? _retinaSample;
+
+    /// <summary>README images: show made-up monitors instead of the real ones.</summary>
+    internal void ShowRetinaForTest(RetinaStatus sample)
+    {
+        _retinaSample = sample;
+        RenderRetina(sample, busy: false);
+    }
+
+    private void RefreshRetinaUi()
+    {
+        if (_retinaSample != null) return;
+        var app = App.Instance;
+        if (app is { HasRetinaState: false }) { _ = app.RefreshRetinaAsync(); return; } // comes back via RetinaChanged
+        RenderRetina(app?.RetinaState ?? Retina.Query(), app?.RetinaBusy == true);
+    }
+
+    private void RenderRetina(RetinaStatus st, bool busy)
+    {
+        _loadingSettings = true;
+        RetinaToggle.IsChecked = st.IsOn;
+        _loadingSettings = false;
+        RetinaToggle.IsEnabled = !busy && st.CanToggle;
+
+        RetinaMonitors.Children.Clear();
+        foreach (var d in st.Displays)
+        {
+            var sep = new Border();
+            sep.SetResourceReference(StyleProperty, "Card.Separator");
+            RetinaMonitors.Children.Add(sep);
+
+            var row = new Grid();
+            row.SetResourceReference(StyleProperty, "Card.Row");
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var icon = new IconView { Icon = "display", Width = 17, Height = 17, VerticalAlignment = VerticalAlignment.Center };
+            icon.SetResourceReference(IconView.ForegroundProperty, "Brush.TextSecondary");
+            row.Children.Add(icon);
+
+            var text = new StackPanel { Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+            text.Children.Add(new TextBlock { Text = d.Name, TextTrimming = TextTrimming.CharacterEllipsis });
+            var info = new TextBlock { Text = L.F("Retina.Monitor", d.Rect, $"{d.ScalePercent} %", d.Frequency) };
+            info.SetResourceReference(StyleProperty, "Text.Caption");
+            text.Children.Add(info);
+            Grid.SetColumn(text, 1);
+            row.Children.Add(text);
+
+            string detail = d.Detail.ToString("0.##");
+            var status = new TextBlock
+            {
+                Text = d.ScalePercent >= 200 ? $"Retina {detail}×"
+                    : d.CanDouble ? (d.ScalePercent == 100 ? L.T("Retina.Normal") : L.F("Retina.Scale", detail))
+                    : $"{L.F("Retina.Scale", detail)} · {L.T("Retina.NoModeShort")}",
+                VerticalAlignment = VerticalAlignment.Center,
+                FontWeight = d.ScalePercent >= 200 ? FontWeights.SemiBold : FontWeights.Normal,
+                Margin = new Thickness(12, 0, 0, 0),
+            };
+            status.SetResourceReference(TextBlock.ForegroundProperty, d.ScalePercent >= 200 ? "Brush.Accent" : "Brush.TextSecondary");
+            Grid.SetColumn(status, 2);
+            row.Children.Add(status);
+            RetinaMonitors.Children.Add(row);
+        }
+
+        bool needSetup = !st.CanToggle && !st.AllSharp;
+        RetinaSetup.Visibility = needSetup ? Visibility.Visible : Visibility.Collapsed;
+        if (needSetup)
+        {
+            (RetinaSetupText.Text, RetinaSetupButton.Content) = st.Vendor switch
+            {
+                "nvidia" => (L.T("Retina.SetupNvidia"), L.T("Retina.OpenNvidia")),
+                "amd" => (L.T("Retina.SetupAmd"), L.T("Retina.OpenAmd")),
+                _ => (L.T("Retina.SetupOther"), L.T("Retina.OpenDisplay")),
+            };
+            RetinaSetupButton.Tag = st.Vendor;
+        }
+    }
+
+    private async void RetinaToggle_Click(object sender, RoutedEventArgs e)
+    {
+        var app = App.Instance;
+        if (app == null || _loadingSettings) return;
+        bool on = RetinaToggle.IsChecked == true;
+        RetinaToggle.IsEnabled = false;
+        await app.SetRetinaAsync(on);
+        RefreshRetinaUi();
+    }
+
+    private void RetinaSetup_Click(object sender, RoutedEventArgs e) => Retina.OpenDriverSettings(RetinaSetupButton.Tag as string ?? "other");
 
     // =============================================================== updates
 

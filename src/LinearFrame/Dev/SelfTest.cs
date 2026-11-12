@@ -214,7 +214,150 @@ internal static class SelfTest
 
         Check("editor scenario (draw, move, resize, undo/redo, crop+extend 16:9)", () => EditorScenario(dir));
 
+        Check("shortcuts: single key, mouse buttons, settings round-trip", () =>
+        {
+            var end = new HotkeyGesture(System.Windows.Input.ModifierKeys.None, System.Windows.Input.Key.End);
+            var m5 = new HotkeyGesture(System.Windows.Input.ModifierKeys.None, HotMouse.XButton2);
+            var ctrlM4 = new HotkeyGesture(System.Windows.Input.ModifierKeys.Control, HotMouse.XButton1);
+            if (end.ToString() != "End" || !end.IsLoneKey || end.VirtualKey != 0x23) throw new Exception($"End: {end} vk {end.VirtualKey}");
+            if (m5.ToString() != L.T("Hotkey.Mouse5") || !m5.IsMouse || m5.IsLoneKey) throw new Exception($"M5: {m5}");
+            if (!ctrlM4.ToString().StartsWith("Ctrl + ")) throw new Exception($"Ctrl+M4: {ctrlM4}");
+            if (m5.SameAs(ctrlM4) || !m5.SameAs(m5.Clone()) || end.SameAs(m5)) throw new Exception("SameAs");
+            foreach (var k in new[] { System.Windows.Input.Key.A, System.Windows.Input.Key.D4, System.Windows.Input.Key.Space, System.Windows.Input.Key.OemTilde, System.Windows.Input.Key.NumPad5 })
+                if (!HotkeyBox.IsTypingKey(k)) throw new Exception($"{k} should need a modifier");
+            foreach (var k in new[] { System.Windows.Input.Key.End, System.Windows.Input.Key.Home, System.Windows.Input.Key.F13, System.Windows.Input.Key.Snapshot, System.Windows.Input.Key.Pause, System.Windows.Input.Key.Insert })
+                if (HotkeyBox.IsTypingKey(k)) throw new Exception($"{k} should work alone");
+
+            var s = new AppSettings { RegionHotkey = end, RegionHotkey2 = m5 };
+            var json = System.Text.Json.JsonSerializer.Serialize(s, AppSettings.Json);
+            var back = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(json, AppSettings.Json)!;
+            if (!back.RegionHotkey.SameAs(end) || back.RegionHotkey2.Mouse != HotMouse.XButton2) throw new Exception("round-trip");
+            // a 1.0.0 settings file (with the old full-screen shortcut) still loads
+            var old = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(
+                "{\"RegionHotkey\":{\"Modifiers\":\"Control, Shift\",\"Key\":\"D4\"},\"FullscreenHotkey\":{\"Modifiers\":\"Control, Shift\",\"Key\":\"D3\"}}", AppSettings.Json)!;
+            if (old.RegionHotkey.ToString() != "Ctrl + Shift + 4" || old.RegionHotkey2 == null || !old.RegionHotkey2.IsEmpty) throw new Exception("old settings");
+
+            // the mouse hook installs and goes away cleanly (no bindings -> nothing is swallowed meanwhile)
+            var sw = Stopwatch.StartNew();
+            using (var hook = new MouseShortcutHook(IntPtr.Zero, 0))
+                if (!hook.IsActive) throw new Exception("mouse hook not installed");
+            return $"End / M5 / Ctrl+M4 ok, JSON ok, mouse hook on+off {sw.ElapsedMilliseconds} ms";
+        });
+
+        Check("live shortcuts: injected Mouse 5 and End fire (and are swallowed)", () =>
+        {
+            const int MouseMsg = Native.WM_APP + 77;
+            int mouseFired = 0, keyFired = 0;
+            var sink = new System.Windows.Interop.HwndSource(new System.Windows.Interop.HwndSourceParameters("LinearFrame.TestSink")
+            {
+                Width = 0, Height = 0, WindowStyle = unchecked((int)Native.WS_POPUP), PositionX = -32000, PositionY = -32000,
+            });
+            sink.AddHook((IntPtr h, int m, IntPtr w, IntPtr l, ref bool handled) =>
+            {
+                if (m == MouseMsg) { mouseFired++; handled = true; }
+                if (m == Native.WM_HOTKEY && w.ToInt32() == 0x7777) { keyFired++; handled = true; }
+                return IntPtr.Zero;
+            });
+            try
+            {
+                using (var hook = new MouseShortcutHook(sink.Handle, MouseMsg))
+                {
+                    hook.SetBindings(new[] { (HotMouse.XButton2, 0u) });
+                    Inject.MouseX(2);
+                    Pump(TimeSpan.FromSeconds(1), () => mouseFired > 0);
+                }
+                string key;
+                if (Native.RegisterHotKey(sink.Handle, 0x7777, 0x4000, 0x23)) // End alone (MOD_NOREPEAT)
+                {
+                    Inject.Key(0x23, extended: true);
+                    Pump(TimeSpan.FromSeconds(1), () => keyFired > 0);
+                    Native.UnregisterHotKey(sink.Handle, 0x7777);
+                    key = $"End fired {keyFired}×";
+                    if (keyFired != 1) throw new Exception(key);
+                }
+                else key = "End is taken by another app here (skipped)";
+                if (mouseFired != 1) throw new Exception($"Mouse 5 fired {mouseFired}×");
+                return $"Mouse 5 fired once, {key}";
+            }
+            finally { sink.Dispose(); }
+        });
+
+        Check("Retina: monitors and 2× modes (read-only)", () =>
+        {
+            var sw = Stopwatch.StartNew();
+            var st = Retina.Query();
+            long ms = sw.ElapsedMilliseconds;
+            if (st.Displays.Count == 0) throw new Exception("no displays");
+            return $"{ms} ms, vendor {st.Vendor}, on={st.IsOn}, canToggle={st.CanToggle}: " + string.Join("; ", st.Displays.Select(d =>
+                $"{d.Name} {d.Width}x{d.Height}@{d.Frequency} at {d.X},{d.Y} native {d.NativeWidth}x{d.NativeHeight} scale {d.ScalePercent}% 2x-mode {(d.DoubleFrequency > 0 ? d.DoubleFrequency + " Hz" : "none")}{(d.Primary ? " primary" : "")}"));
+        });
+
+        Check("Retina: monitor layout stays connected", () =>
+        {
+            Int32Rect R(int x, int y, int w, int h) => new(x, y, w, h);
+            var row = new[] { R(-1920, 0, 1920, 1080), R(0, 0, 1920, 1080), R(1920, 120, 1920, 1080) };
+            var all = Retina.Relayout(row, new[] { (3840, 2160), (3840, 2160), (3840, 2160) }, 1)!;
+            if (all[0] != (-3840, 0) || all[1] != (0, 0) || all[2] != (3840, 240)) throw new Exception($"row: {string.Join(" ", all)}");
+            var mixed = Retina.Relayout(row, new[] { (1920, 1080), (3840, 2160), (3840, 2160) }, 1)!;
+            if (mixed[0] != (-1920, 0) || mixed[2] != (3840, 240)) throw new Exception($"mixed: {string.Join(" ", mixed)}");
+            var back = Retina.Relayout(all.Select((p, i) => R(p.X, p.Y, 3840, 2160)).ToArray(), new[] { (1920, 1080), (1920, 1080), (1920, 1080) }, 1)!;
+            if (back[0] != (-1920, 0) || back[2] != (1920, 120)) throw new Exception($"back: {string.Join(" ", back)}");
+            var stack = Retina.Relayout(new[] { R(0, 0, 1920, 1080), R(0, -1080, 1920, 1080) }, new[] { (3840, 2160), (3840, 2160) }, 0)!;
+            if (stack[1] != (0, -2160)) throw new Exception($"stack: {string.Join(" ", stack)}");
+            var gap = Retina.Relayout(new[] { R(0, 0, 1920, 1080), R(2500, 0, 1920, 1080) }, new[] { (3840, 2160), (3840, 2160) }, 0);
+            if (gap != null) throw new Exception("a detached monitor must not be guessed");
+            return "row, mixed, back, stacked, detached ok";
+        });
+
+        Check("Start menu shortcut (.lnk in the test folder)", () =>
+        {
+            var link = Path.Combine(dir, "LinearFrame-test.lnk");
+            StartMenuShortcut.Create(link);
+            var target = StartMenuShortcut.ReadTarget(link);
+            if (!string.Equals(target, AppPaths.ExePath, StringComparison.OrdinalIgnoreCase)) throw new Exception($"target {target}");
+            return $"{new FileInfo(link).Length} bytes → {Path.GetFileName(target)}";
+        });
+
         TestMedia(dir);
+    }
+
+    /// <summary>Lets window messages (hooks, hotkeys) arrive while a test waits for them.</summary>
+    private static void Pump(TimeSpan max, Func<bool> done)
+    {
+        var sw = Stopwatch.StartNew();
+        while (!done() && sw.Elapsed < max)
+        {
+            var frame = new System.Windows.Threading.DispatcherFrame();
+            System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+                System.Windows.Threading.DispatcherPriority.Background, new Action(() => frame.Continue = false));
+            System.Windows.Threading.Dispatcher.PushFrame(frame);
+            Thread.Sleep(10);
+        }
+    }
+
+    /// <summary>Synthetic input for the live shortcut test.</summary>
+    private static class Inject
+    {
+        [StructLayout(LayoutKind.Sequential)] private struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr extra; }
+        [StructLayout(LayoutKind.Sequential)] private struct KEYBDINPUT { public ushort vk, scan; public uint flags, time; public IntPtr extra; }
+        [StructLayout(LayoutKind.Explicit)] private struct UNION { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
+        [StructLayout(LayoutKind.Sequential)] private struct INPUT { public uint type; public UNION u; }
+        [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint n, INPUT[] inputs, int size);
+
+        public static void MouseX(int button)
+        {
+            var down = new INPUT { type = 0, u = new UNION { mi = new MOUSEINPUT { mouseData = (uint)button, dwFlags = 0x0080 } } };
+            var up = new INPUT { type = 0, u = new UNION { mi = new MOUSEINPUT { mouseData = (uint)button, dwFlags = 0x0100 } } };
+            if (SendInput(2, new[] { down, up }, Marshal.SizeOf<INPUT>()) != 2) throw new Exception($"SendInput failed ({Marshal.GetLastWin32Error()})");
+        }
+
+        public static void Key(ushort vk, bool extended)
+        {
+            uint ext = extended ? 1u : 0u;
+            var down = new INPUT { type = 1, u = new UNION { ki = new KEYBDINPUT { vk = vk, flags = ext } } };
+            var up = new INPUT { type = 1, u = new UNION { ki = new KEYBDINPUT { vk = vk, flags = ext | 2 } } };
+            if (SendInput(2, new[] { down, up }, Marshal.SizeOf<INPUT>()) != 2) throw new Exception($"SendInput failed ({Marshal.GetLastWin32Error()})");
+        }
     }
 
     private static string EditorScenario(string dir)
@@ -461,6 +604,7 @@ internal static class SelfTest
     private static void RenderUi(string dir)
     {
         Directory.CreateDirectory(dir);
+        _ = App.Instance!.RetinaState; // real monitors, synchronously (the app itself loads this in the background)
         void Snap(FrameworkElement el, int w, int h, string file, Brush bg)
         {
             el.Measure(new Size(w, h));

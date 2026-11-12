@@ -169,11 +169,11 @@ internal static class Marketing
         var red = Color.FromRgb(0xFF, 0x3B, 0x30);
         doc.Items.Add(new StrokeAnnotation { Highlighter = true, Width = u, Color = Color.FromRgb(0xFF, 0xCC, 0x00), Points = { new Point(10, 33), new Point(148, 33) } });
         doc.Items.Add(new ShapeAnnotation { Kind = ShapeKind.Rect, Width = u * 0.8, Color = red, Rect = new Rect(506, 90, 194, 50) });
-        doc.Items.Add(new LineAnnotation { Arrow = true, Width = u, Color = red, A = new Point(330, 292), B = new Point(498, 136) });
+        doc.Items.Add(new LineAnnotation { Arrow = true, Width = u, Color = red, A = new Point(345, 157), B = new Point(494, 124) });
         doc.Items.Add(new CounterAnnotation { Number = 1, Width = u, Color = red, Center = new Point(700, 90) });
         doc.Items.Add(new CounterAnnotation { Number = 2, Width = u, Color = red, Center = new Point(615, 281) });
-        doc.Items.Add(new TextAnnotation { Text = L.IsPolish ? "Twój skrót" : "Your shortcut", Width = u * 0.95, Color = red, Position = new Point(190, 296) });
-        doc.Items.Add(new ShapeAnnotation { Kind = ShapeKind.Pixelate, Rect = new Rect(380, 358, 232, 30) });
+        doc.Items.Add(new TextAnnotation { Text = L.IsPolish ? "Twój skrót" : "Your shortcut", Width = u * 0.95, Color = red, Position = new Point(196, 142) });
+        doc.Items.Add(new StrokeAnnotation { Highlighter = true, Width = u, Color = Color.FromRgb(0xFF, 0xCC, 0x00), Points = { new Point(40, 286), new Point(252, 286) } });
         var ed = new EditorWindow(doc);
         ed.View.SetZoom(1.0);
         var edRoot = (FrameworkElement)ed.Content;
@@ -192,14 +192,22 @@ internal static class Marketing
         double k = 16.0 / 9, bw = box.Width, bh = box.Height;
         if (bw / bh < k) bw = bh * k; else bh = bw / k;
         ext.Frame = new Int32Rect((int)Math.Round(content.Width / 2.0 - bw / 2), (int)Math.Round(content.Height / 2.0 - bh / 2), (int)Math.Round(bw), (int)Math.Round(bh));
-        ext.Items.Add(new LineAnnotation { Arrow = true, Width = 5, Color = red, A = new Point(-60, 170), B = new Point(70, 62) });
+        ext.Items.Add(new LineAnnotation { Arrow = true, Width = 5, Color = red, A = new Point(-62, 132), B = new Point(10, 68) });
         var after = Exporter.Render(ext, ExportSize.UHD4K);
         Save(after, Path.Combine(dir, "extend-4k-full.png"));
         Save(BeforeAfter(before, after), Path.Combine(dir, "extend.png"));
     }
 
-    private static void Neutral(MainWindow w) =>
+    /// <summary>Nothing from the machine the images are made on: sample folder, sample monitor, sample second shortcut.</summary>
+    private static void Neutral(MainWindow w)
+    {
         w.FolderText.Text = L.IsPolish ? @"Obrazy\LinearFrame" : @"Pictures\LinearFrame";
+        w.RegionHotkey2Box.Gesture = new HotkeyGesture(System.Windows.Input.ModifierKeys.None, HotMouse.XButton2);
+        w.ShowRetinaForTest(new RetinaStatus(new[]
+        {
+            new DisplayState(@"\\.\DISPLAY1", L.IsPolish ? "Monitor 24\"" : "24\" monitor", "NVIDIA GeForce", 0, 0, 3840, 2160, 144, true, 1920, 1080, 200, 0),
+        }));
+    }
 
     private static BitmapSource BeforeAfter(BitmapSource before, BitmapSource after)
     {
