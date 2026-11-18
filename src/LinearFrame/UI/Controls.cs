@@ -96,6 +96,25 @@ public static class WindowHelper
         };
     }
 
+    /// <summary>Another app (a game, a video) fills its whole monitor and has the focus.</summary>
+    public static bool FullScreenAppInFront()
+    {
+        try
+        {
+            var fg = Native.GetForegroundWindow();
+            if (fg == IntPtr.Zero) return false;
+            Native.GetWindowThreadProcessId(fg, out uint pid);
+            if (pid == (uint)Environment.ProcessId) return false;
+            if (Native.ClassName(fg) is "Progman" or "WorkerW" or "Shell_TrayWnd") return false;
+            if (!Native.GetWindowRect(fg, out var r)) return false;
+            var info = new Native.MONITORINFOEX { cbSize = Marshal.SizeOf<Native.MONITORINFOEX>() };
+            if (!Native.GetMonitorInfo(Native.MonitorFromWindow(fg, Native.MONITOR_DEFAULTTONEAREST), ref info)) return false;
+            var m = info.rcMonitor;
+            return r.Left <= m.Left && r.Top <= m.Top && r.Right >= m.Right && r.Bottom >= m.Bottom;
+        }
+        catch { return false; }
+    }
+
     public static void BringToFront(Window w)
     {
         if (w.WindowState == WindowState.Minimized) w.WindowState = WindowState.Normal;

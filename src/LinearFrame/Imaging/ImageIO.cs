@@ -116,20 +116,25 @@ public static class ImageIO
         return false;
     }
 
+    private static FileStream OpenRead(string path) =>
+        new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+
     public static BitmapSource? LoadThumbnail(string path, int decodeWidth)
     {
         try
         {
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            int orientation = Probe(path)?.Orientation ?? 1;
+            using var fs = OpenRead(path);
             var bi = new BitmapImage();
             bi.BeginInit();
             bi.CacheOption = BitmapCacheOption.OnLoad;
             bi.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
-            bi.DecodePixelWidth = decodeWidth;
+            if (orientation >= 5) bi.DecodePixelHeight = decodeWidth; else bi.DecodePixelWidth = decodeWidth;
             bi.StreamSource = fs;
             bi.EndInit();
-            bi.Freeze();
-            return bi;
+            var shown = Orient(bi, orientation);
+            if (!shown.IsFrozen) shown.Freeze();
+            return shown;
         }
         catch { return null; }
     }
@@ -138,9 +143,10 @@ public static class ImageIO
     {
         try
         {
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            int orientation = Probe(path)?.Orientation ?? 1;
+            using var fs = OpenRead(path);
             var dec = BitmapDecoder.Create(fs, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
-            BitmapSource frame = dec.Frames[0];
+            BitmapSource frame = Orient(dec.Frames[0], orientation); // a phone photo stands the right way up
             if (frame.Format != PixelFormats.Bgra32)
                 frame = new FormatConvertedBitmap(frame, PixelFormats.Bgra32, null, 0);
             // normalise DPI to 96 so 1 image pixel == 1 unit everywhere
@@ -152,5 +158,129 @@ public static class ImageIO
             Log.Error("Load image failed", ex);
             return null;
         }
+    }
+
+    // ------------------------------------------------------------------ viewing pictures
+
+    /// <summary>What a picture file holds, read from its header only (cheap, any thread).</summary>
+    public sealed record ImageInfo(int Width, int Height, int Orientation, int Frames, bool HasAlpha)
+    {
+        /// <summary>Size the way the picture is shown (the camera's rotation applied).</summary>
+        public int ShownWidth => Orientation >= 5 ? Height : Width;
+        public int ShownHeight => Orientation >= 5 ? Width : Height;
+    }
+
+    public static ImageInfo? Probe(string path)
+    {
+        try
+        {
+            using var fs = OpenRead(path);
+            var dec = BitmapDecoder.Create(fs, BitmapCreateOptions.DelayCreation | BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.None);
+            var f = dec.Frames[0];
+            return new ImageInfo(f.PixelWidth, f.PixelHeight, ReadOrientation(f), dec.Frames.Count, HasAlpha(f));
+        }
+        catch { return null; }
+    }
+
+    /// <summary>EXIF orientation 1–8 (how the camera was held); 1 when the file says nothing.</summary>
+    private static int ReadOrientation(BitmapFrame f)
+    {
+        try
+        {
+            if (f.Metadata is not BitmapMetadata md) return 1;
+            foreach (var q in new[] { "System.Photo.Orientation", "/app1/ifd/{ushort=274}" })
+            {
+                object? v = null;
+                try { v = md.GetQuery(q); } catch { /* not in this format */ }
+                int o = v switch { ushort u => u, short s => s, int i => i, uint ui => (int)ui, _ => 0 };
+                if (o is >= 1 and <= 8) return o;
+            }
+        }
+        catch { /* no metadata (BMP, most PNGs) */ }
+        return 1;
+    }
+
+    private static bool HasAlpha(BitmapFrame f)
+    {
+        var fmt = f.Format;
+        if (fmt == PixelFormats.Bgra32 || fmt == PixelFormats.Pbgra32 || fmt == PixelFormats.Rgba64 || fmt == PixelFormats.Prgba64
+            || fmt == PixelFormats.Rgba128Float || fmt == PixelFormats.Prgba128Float) return true;
+        try { return f.Palette != null && f.Palette.Colors.Any(c => c.A < 255); } catch { return false; }
+    }
+
+    /// <summary>Turns the stored pixels the way the camera was held (EXIF orientation).</summary>
+    public static BitmapSource Orient(BitmapSource src, int orientation)
+    {
+        if (orientation is < 2 or > 8) return src;
+        var t = new TransformGroup();
+        if (orientation is 2 or 4 or 5 or 7) t.Children.Add(new ScaleTransform(orientation == 4 ? 1 : -1, orientation == 4 ? -1 : 1));
+        double angle = orientation switch { 3 => 180, 5 => 270, 6 => 90, 7 => 90, 8 => 270, _ => 0 };
+        if (angle != 0) t.Children.Add(new RotateTransform(angle));
+        return new TransformedBitmap(src, t);
+    }
+
+    /// <summary>
+    /// The picture ready to be shown: colour profile applied, the camera's rotation applied, at most
+    /// <paramref name="maxSide"/> pixels on its longer side (0 = every pixel). JPEGs shrink while decoding, so a
+    /// screen-sized copy of a 50-megapixel photo takes a few milliseconds. Frozen - safe to hand to the UI thread.
+    /// </summary>
+    public static BitmapSource Decode(string path, ImageInfo info, int maxSide)
+    {
+        using var fs = OpenRead(path);
+        var bi = new BitmapImage();
+        bi.BeginInit();
+        bi.CacheOption = BitmapCacheOption.OnLoad;
+        bi.StreamSource = fs;
+        if (maxSide > 0 && Math.Max(info.Width, info.Height) > maxSide)
+        {
+            if (info.Width >= info.Height) bi.DecodePixelWidth = maxSide; else bi.DecodePixelHeight = maxSide;
+        }
+        bi.EndInit();
+        BitmapSource src = Orient(bi, info.Orientation);
+        // one plain format the GPU takes as it is (CMYK, 16-bit, grey and palette pictures are converted once, here)
+        var want = info.HasAlpha ? PixelFormats.Pbgra32 : PixelFormats.Bgr32;
+        if (src.Format != want) src = new FormatConvertedBitmap(src, want, null, 0);
+        var cached = new CachedBitmap(src, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+        cached.Freeze();
+        return cached;
+    }
+
+    /// <summary>Moving pictures (GIF, WebP, PNG, AVIF animations) belong in the player, still ones in the viewer.</summary>
+    public static bool IsAnimated(string path, ImageInfo? info)
+    {
+        try
+        {
+            var ext = Path.GetExtension(path).ToLowerInvariant();
+            if (ext == ".gif") return info?.Frames > 1;
+            if (ext == ".apng") return true;
+            Span<byte> head = stackalloc byte[64];
+            int n;
+            using (var fs = OpenRead(path)) n = fs.Read(head);
+            head = head[..n];
+            // WebP: RIFF....WEBPVP8X with the "animation" flag
+            if (n >= 21 && head[..4].SequenceEqual("RIFF"u8) && head[8..12].SequenceEqual("WEBP"u8) && head[12..16].SequenceEqual("VP8X"u8))
+                return (head[20] & 0x02) != 0;
+            // AVIF image sequence: ftyp brand "avis"
+            if (n >= 12 && head[4..8].SequenceEqual("ftyp"u8) && head[8..12].SequenceEqual("avis"u8)) return true;
+            // APNG: an acTL chunk before the first IDAT
+            if (n >= 8 && head[..8].SequenceEqual(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A })) return HasPngChunkBeforeData(path, "acTL"u8.ToArray());
+        }
+        catch { /* unreadable: let the viewer say so */ }
+        return false;
+    }
+
+    private static bool HasPngChunkBeforeData(string path, byte[] type)
+    {
+        using var fs = OpenRead(path);
+        var buf = new byte[8];
+        fs.Position = 8;
+        for (int i = 0; i < 64 && fs.Read(buf, 0, 8) == 8; i++)
+        {
+            int len = buf[0] << 24 | buf[1] << 16 | buf[2] << 8 | buf[3];
+            if (buf.AsSpan(4, 4).SequenceEqual(type)) return true;
+            if (buf.AsSpan(4, 4).SequenceEqual("IDAT"u8) || len < 0) return false;
+            fs.Position += len + 4; // data + CRC
+        }
+        return false;
     }
 }

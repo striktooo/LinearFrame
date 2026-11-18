@@ -39,6 +39,7 @@ Copy-Item (Join-Path $pub 'engine/libmpv-2.dll') (Join-Path $app 'engine')
 Copy-Item (Join-Path $pub 'engine/ffmpeg.exe') (Join-Path $app 'engine')
 Copy-Item (Join-Path $root 'LICENSE') (Join-Path $app 'LICENSE.txt')
 Copy-Item (Join-Path $root 'THIRD-PARTY-NOTICES.md') (Join-Path $app 'THIRD-PARTY-NOTICES.txt')
+Copy-Item (Join-Path $root 'src/LinearFrame/Assets/Fonts/OFL.txt') (Join-Path $app 'OFL-TikTokSans.txt')
 Copy-Item (Join-Path $root 'docs/CZYTAJ.txt') (Join-Path $app 'CZYTAJ - README.txt')
 
 $zip = Join-Path $dist "LinearFrame-$version-win-x64.zip"

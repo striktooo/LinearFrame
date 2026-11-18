@@ -52,28 +52,69 @@ public sealed class CaptureSession
         return (session, overlay);
     }
 
+    private static bool _warming;
+
     /// <summary>
-    /// Runs one invisible overlay off-screen shortly after start-up, so the very first Ctrl+Shift+4 is as fast as every
-    /// later one (code, styles, fonts and the render pipeline are already warm).
+    /// Puts a tiny, invisible (cloaked, click-through) overlay on every monitor for a moment, so the first shortcut press
+    /// is as fast as every later one: code, styles and fonts are warm, and WPF has set up its Direct3D device for each
+    /// screen. Right after Windows starts that set-up alone can take several seconds - the very first capture used to sit
+    /// invisible for that long (and an off-screen window, which this used to be, never set it up at all).
     /// </summary>
-    public static void Prewarm(AppSettings s)
+    public static void Prewarm(AppSettings s, string why)
     {
-        if (Current != null) return;
+        if (Current != null || _warming) return;
+        _warming = true;
+        var sw = Stopwatch.StartNew();
+        CaptureSession? session = null;
         try
         {
-            var area = new Int32Rect(-32000, -32000, 32, 32);
-            var mon = new MonitorInfo(IntPtr.Zero, area, area, 1.0, false);
-            var session = new CaptureSession(s, new List<WindowEntry>());
-            var pb = new PixelBuffer(32, 32);
+            var monitors = MonitorInfo.All();
+            session = new CaptureSession(s, new List<WindowEntry>(), hd: false);
+            var done = session;
+            int pending = monitors.Count;
+            long created = 0, drawn = 0;
+            var pb = new PixelBuffer(16, 16);
             pb.ForceOpaque();
-            var o = session.AddOverlay(mon, pb.ToBitmap(), activate: false, show: true);
-            o.ContentRendered += (_, _) => o.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() =>
+            var dot = pb.ToBitmap();
+
+            void Finish(string state)
             {
-                session._finished = true;
-                o.Close();
-            }));
+                if (!_warming) return;
+                _warming = false;
+                done._finished = true;
+                done.CloseOverlays();
+                Log.Info($"Warm-up ({why}): {monitors.Count} screens, windows {created} ms, first frames {(drawn > 0 ? drawn + " ms" : state)}");
+                Memory.TrimSoon(3000);
+            }
+
+            // never leave anything behind, even if a window doesn't get to draw
+            var guard = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+            guard.Tick += (_, _) => { guard.Stop(); Finish("not drawn after 30 s"); };
+            guard.Start();
+
+            foreach (var m in monitors)
+            {
+                var spot = new Int32Rect(m.Bounds.X, m.Bounds.Y, 16, 16); // the monitor's corner: WPF picks that screen's device
+                var o = session.AddOverlay(new MonitorInfo(m.Handle, spot, spot, m.Scale, m.Primary), dot, activate: false, show: true, warmup: true);
+                o.WarmedUp += () =>
+                {
+                    if (--pending > 0) return;
+                    drawn = sw.ElapsedMilliseconds;
+                    // the render thread finishes the device and the first frame after this - give it a moment, then let go
+                    var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
+                    t.Tick += (_, _) => { t.Stop(); guard.Stop(); Finish(""); };
+                    t.Start();
+                };
+            }
+            created = sw.ElapsedMilliseconds;
+            if (monitors.Count == 0) { guard.Stop(); Finish("no screens"); }
         }
-        catch (Exception ex) { Log.Error("Prewarm failed", ex); }
+        catch (Exception ex)
+        {
+            Log.Error("Prewarm failed", ex);
+            _warming = false;
+            if (session != null) { session._finished = true; session.CloseOverlays(); }
+        }
     }
 
     public static void StartRegion(AppSettings s)
@@ -120,14 +161,14 @@ public sealed class CaptureSession
         }
     }
 
-    private CaptureOverlayWindow AddOverlay(MonitorInfo m, BitmapSource bmp, bool activate, bool show)
+    private CaptureOverlayWindow AddOverlay(MonitorInfo m, BitmapSource bmp, bool activate, bool show, bool warmup = false)
     {
         var windows = _windows
             .Select(w => ImageOps.Intersect(w, m.Bounds))
             .Where(w => w.Width > 0 && w.Height > 0)
             .Select(w => new Int32Rect(w.X - m.Bounds.X, w.Y - m.Bounds.Y, w.Width, w.Height))
             .ToList();
-        var o = new CaptureOverlayWindow(this, m, bmp, windows, activate);
+        var o = new CaptureOverlayWindow(this, m, bmp, windows, activate, warmup);
         _overlays.Add((o, bmp));
         if (show) o.Show();
         return o;

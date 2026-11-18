@@ -26,6 +26,7 @@ public sealed class CaptureOverlayWindow : Window
     private readonly BitmapSource _shot;
     private readonly List<Int32Rect> _windows;
     private readonly bool _activateOnShow;
+    private readonly bool _warmup;
     private readonly SelectionSurface _surface;
     private readonly Canvas _layer;
     private readonly Border _toolbar;
@@ -50,20 +51,24 @@ public sealed class CaptureOverlayWindow : Window
     private static int _alive;
     ~CaptureOverlayWindow() => Interlocked.Decrement(ref _alive);
 
-    public CaptureOverlayWindow(CaptureSession session, MonitorInfo monitor, BitmapSource shot, List<Int32Rect> windows, bool activate)
+    /// <summary>Fired once the window has drawn its first frame (it stays invisible - see <see cref="CaptureSession.Prewarm"/>).</summary>
+    public event Action? WarmedUp;
+
+    public CaptureOverlayWindow(CaptureSession session, MonitorInfo monitor, BitmapSource shot, List<Int32Rect> windows, bool activate, bool warmup = false)
     {
         Interlocked.Increment(ref _alive);
         _session = session;
         Monitor = monitor;
         _shot = shot;
         _windows = windows;
-        _activateOnShow = activate;
+        _activateOnShow = activate && !warmup;
+        _warmup = warmup;
 
         Title = "LinearFrame.Capture";
         WindowStyle = WindowStyle.None;
         ResizeMode = ResizeMode.NoResize;
         ShowInTaskbar = false;
-        Topmost = true;
+        Topmost = !warmup;
         Background = Brushes.Black;
         Cursor = Cursors.Cross;
         UseLayoutRounding = true;
@@ -89,7 +94,11 @@ public sealed class CaptureOverlayWindow : Window
         _session.SizeChanged += OnSizeChanged;
 
         SourceInitialized += OnSourceInitialized;
-        ContentRendered += (_, _) => Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(Reveal));
+        ContentRendered += (_, _) =>
+        {
+            if (_warmup) WarmedUp?.Invoke(); // never uncloaked
+            else Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(Reveal));
+        };
         PreviewKeyDown += (_, e) => _session.HandleKey(this, e);
         Closed += (_, _) => _session.SizeChanged -= OnSizeChanged;
 
@@ -124,13 +133,11 @@ public sealed class CaptureOverlayWindow : Window
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
         _hwnd = new WindowInteropHelper(this).Handle;
-        Native.AddExStyle(_hwnd, Native.WS_EX_TOOLWINDOW);
+        // a warm-up window never takes a click or the focus (it is invisible anyway)
+        Native.AddExStyle(_hwnd, Native.WS_EX_TOOLWINDOW | (_warmup ? Native.WS_EX_TRANSPARENT | Native.WS_EX_NOACTIVATE : 0));
         Native.SetCloak(_hwnd, true);
         int disable = 1;
         Native.DwmSetWindowAttribute(_hwnd, Native.DWMWA_TRANSITIONS_FORCEDISABLED, ref disable, sizeof(int));
-        // No Direct3D device for the overlay: WPF would create one per monitor (50-60 MB each) and keep it for the rest
-        // of the session. The overlay is a still picture plus a rectangle, and only the area that changes is redrawn,
-        // so the CPU draws it in well under a millisecond per frame. (LF_OVERLAY_GPU=1 switches the GPU path back on.)
         Place();
         HwndSource.FromHwnd(_hwnd)?.AddHook((IntPtr h, int msg, IntPtr w, IntPtr l, ref bool handled) =>
         {
@@ -142,7 +149,7 @@ public sealed class CaptureOverlayWindow : Window
     private void Place()
     {
         var b = Monitor.Bounds;
-        Native.SetWindowPos(_hwnd, Native.HWND_TOPMOST, b.X, b.Y, b.Width, b.Height, Native.SWP_NOACTIVATE);
+        Native.SetWindowPos(_hwnd, _warmup ? Native.HWND_BOTTOM : Native.HWND_TOPMOST, b.X, b.Y, b.Width, b.Height, Native.SWP_NOACTIVATE);
         Scale = WindowHelper.DpiScale(this);
         _surface.Redraw();
     }

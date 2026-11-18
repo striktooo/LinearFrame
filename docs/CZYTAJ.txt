@@ -8,7 +8,8 @@ JAK URUCHOMIĆ
      (aplikacja nie ma płatnego certyfikatu podpisu — to normalne dla darmowych projektów open source).
 
 Aplikacja działa w tle. Jej ikonka siedzi w zasobniku obok zegara (na Windows 11 czasem pod strzałką „^” —
-możesz ją przeciągnąć na pasek, żeby była zawsze widoczna).
+możesz ją przeciągnąć na pasek, żeby była zawsze widoczna). Startuje sama od razu po zalogowaniu do Windows
+(małe zadanie w Harmonogramie zadań, bez uprawnień administratora) — wyłączysz to w Ustawieniach.
 
 SKRÓTY
   Ctrl+Shift+4   zrzut: przeciągnij, żeby zaznaczyć kawałek; kliknij okno, żeby złapać całe okno;
@@ -29,16 +30,27 @@ ZRZUTY HD (PRAWDZIWE 2–4×)
 
 ODTWARZACZ
   Przeciągnij film/muzykę na okno LinearFrame albo otwórz plik przez „Otwórz za pomocą”.
-  Spacja — pauza, ←/→ — 5 s, F — pełny ekran, E — edycja bez utraty jakości:
-    „Przytnij” zostawia zaznaczony fragment, „Wytnij fragment” usuwa go i skleja resztę.
-    Potem „Zapisz jako nowy klip” albo „Zastąp oryginał” (oryginał trafia do Kosza).
+  Muzyka od razu pokazuje cały utwór jako waveform — kliknij albo przeciągnij po nim, żeby przeskoczyć.
+  Spacja — pauza, ←/→ — 5 s, F — pełny ekran, Ctrl+C — kopiuj klatkę, E albo nożyczki na pasku — edytor wideo:
+    Podziel (S) i Usuń — wycinasz dowolnie wiele fragmentów; Połącz — doklejasz kolejny film;
+    Tekst (T) — napisy czcionką TikToka (obrys / tło / bez), kolory, rozmiar, przeciąganie po filmie;
+    Emotki — galeria emotek z iPhone'a (pobierana raz, przy pierwszym otwarciu);
+    Baner — Twój baner (film z przezroczystością, np. .mov) w miejscu znacznika: film staje 0,7 s po jego wejściu i rusza 0,4 s przed końcem;
+    Format — 9:16, 1:1, 4:5, 16:9, dopasuj / wypełnij, powiększenie, tło rozmyte albo czarne, rozdzielczość.
+    Potem „Zapisz jako nowy klip” albo „Zastąp oryginał” (oryginał trafia do Kosza). Samo cięcie = bez utraty jakości,
+    reszta jest zapisywana do MP4 (na karcie graficznej, jeśli jest).
+
+ZDJĘCIA
+  Zdjęcia i obrazy (JPG, PNG, HEIC, WebP…) otwarte w LinearFrame pokazują się w przeglądarce: kółko myszy powiększa,
+  przeciąganie przesuwa, dwuklik = cały obraz / rzeczywiste piksele, ←/→ = poprzednie / następne zdjęcie z folderu,
+  Ctrl+C = kopiuj, E albo „Edytuj” = edytor adnotacji.
 
 AKTUALIZACJE
   LinearFrame sam sprawdza nowe wersje na GitHubie i instaluje je po cichu, gdy z niego nie korzystasz.
   Wyłączysz to w Ustawieniach → Aktualizacje.
 
 FOLDER „engine”
-  libmpv-2.dll (silnik odtwarzania) i ffmpeg.exe (przycinanie) — nie usuwaj go.
+  libmpv-2.dll (silnik odtwarzania) i ffmpeg.exe (edycja wideo) — nie usuwaj go.
 
 ODINSTALOWANIE
   W Ustawieniach wyłącz „Uruchamiaj razem z Windows” (a w „Zrzuty HD” kliknij „Usuń sterownik”, jeśli go instalowałeś), zakończ aplikację

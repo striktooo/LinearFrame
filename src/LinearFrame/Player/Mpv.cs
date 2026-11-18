@@ -118,6 +118,7 @@ public sealed unsafe class MpvPlayer : IDisposable
     private int _notifyPending;
     private long _lastTimeNotify;
     private volatile bool _wantTime = true;
+    private double _stopAt = double.NaN;
 
     /// <summary>Minimum time between position notifications (shorter while editing so cuts can be skipped precisely).</summary>
     public int TimeIntervalMs { get; set; } = 120;
@@ -147,6 +148,18 @@ public sealed unsafe class MpvPlayer : IDisposable
     public event Action? VideoReconfig;
     public event Action? TracksChanged;
     public event Action? Idle;
+    /// <summary>Playback paused itself at <see cref="StopAt"/> (raised on the UI thread).</summary>
+    public event Action? StopReached;
+
+    /// <summary>
+    /// Pause by itself when playback reaches this second (NaN = off). Checked on the event thread on every frame, so
+    /// the stop lands on the right frame however busy the UI is. One-shot: it switches itself off when it fires.
+    /// </summary>
+    public double StopAt
+    {
+        get => Volatile.Read(ref _stopAt);
+        set => Volatile.Write(ref _stopAt, value);
+    }
 
     public MpvPlayer(IntPtr wid, Dispatcher ui, double volume, bool muted)
     {
@@ -188,6 +201,7 @@ public sealed unsafe class MpvPlayer : IDisposable
         Opt("sub-auto", "fuzzy");
         Opt("audio-file-auto", "no");
         Opt("audio-display", "no");
+        Opt("image-display-duration", "inf"); // a still picture that ends up here just stays (no 1-second "video")
         Opt("background-color", "#000000");
         Opt("volume", Math.Clamp(volume, 0, 100).ToString(System.Globalization.CultureInfo.InvariantCulture));
         Opt("mute", muted ? "yes" : "no");
@@ -290,6 +304,13 @@ public sealed unsafe class MpvPlayer : IDisposable
         {
             case IdTime:
                 TimePos = has ? *(double*)p->Data : 0;
+                double stop = Volatile.Read(ref _stopAt);
+                if (!double.IsNaN(stop) && has && !Paused && TimePos >= stop - 0.02)
+                {
+                    Volatile.Write(ref _stopAt, double.NaN);
+                    CommandAsync("set", "pause", "yes");
+                    Post(() => StopReached?.Invoke());
+                }
                 // position ticks every frame: deliver at most ~8×/s and only when someone looks at it
                 if (!_wantTime) return;
                 long now = Environment.TickCount64;

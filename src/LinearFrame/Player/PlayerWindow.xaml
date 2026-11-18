@@ -4,6 +4,7 @@
         xmlns:core="clr-namespace:LinearFrame.Core"
         xmlns:ui="clr-namespace:LinearFrame.UI"
         xmlns:pl="clr-namespace:LinearFrame.Player"
+        xmlns:ed="clr-namespace:LinearFrame.Player.Edit"
         Title="LinearFrame" Width="960" Height="560" MinWidth="420" MinHeight="250"
         WindowStartupLocation="CenterScreen" Background="Black" Foreground="White"
         FontFamily="{StaticResource Font.UI}" FontSize="13" UseLayoutRounding="True">
@@ -18,7 +19,22 @@
         </Grid.RowDefinitions>
 
         <Grid x:Name="VideoArea" Background="Black">
-            <!-- audio-only view -->
+            <!-- editor: the finished video's frame - black or the blurred picture around the video (mpv draws only the video) -->
+            <Canvas x:Name="Backdrop" Visibility="Collapsed" IsHitTestVisible="False">
+                <Border x:Name="BackdropFrame" Background="Black" ClipToBounds="True">
+                    <Grid>
+                        <Image x:Name="BackdropImage" Stretch="UniformToFill" HorizontalAlignment="Center" VerticalAlignment="Center"
+                               RenderOptions.BitmapScalingMode="Linear">
+                            <Image.Effect>
+                                <BlurEffect x:Name="BackdropBlur" Radius="30" KernelType="Gaussian" RenderingBias="Performance"/>
+                            </Image.Effect>
+                        </Image>
+                        <Border x:Name="BackdropDim" Background="#14000000"/>
+                    </Grid>
+                </Border>
+            </Canvas>
+
+            <!-- audio-only view: cover, title and the whole song as a waveform - everything scales with the window -->
             <Grid x:Name="AudioView" Visibility="Collapsed">
                 <Grid.Background>
                     <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
@@ -26,8 +42,13 @@
                         <GradientStop Color="#141418" Offset="1"/>
                     </LinearGradientBrush>
                 </Grid.Background>
-                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="24,40,24,120">
-                    <Border x:Name="ArtBorder" Width="210" Height="210" CornerRadius="16" HorizontalAlignment="Center">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="42"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="112"/>
+                </Grid.RowDefinitions>
+                <StackPanel x:Name="AudioStack" Grid.Row="1" VerticalAlignment="Center" Margin="32,0">
+                    <Border x:Name="ArtBorder" Width="160" Height="160" CornerRadius="14" HorizontalAlignment="Center">
                         <Border.Background>
                             <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
                                 <GradientStop Color="#7B61FF" Offset="0"/>
@@ -38,14 +59,17 @@
                             <DropShadowEffect BlurRadius="30" ShadowDepth="6" Opacity="0.5" Direction="270"/>
                         </Border.Effect>
                         <Grid>
-                            <ui:IconView x:Name="ArtIcon" Icon="music" Width="84" Height="84" StrokeWidth="1.4" Foreground="White"/>
-                            <Border x:Name="ArtImageHost" CornerRadius="16" ClipToBounds="True" Visibility="Collapsed"/>
+                            <ui:IconView x:Name="ArtIcon" Icon="music" Width="64" Height="64" StrokeWidth="1.4" Foreground="White"/>
+                            <Border x:Name="ArtImageHost" CornerRadius="14" ClipToBounds="True" Visibility="Collapsed"/>
                         </Grid>
                     </Border>
-                    <TextBlock x:Name="AudioTitle" FontFamily="{StaticResource Font.Display}" FontSize="18" FontWeight="SemiBold" Margin="0,24,0,2"
-                               HorizontalAlignment="Center" TextAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="420"/>
-                    <TextBlock x:Name="AudioArtist" FontSize="13.5" Foreground="#A1A1A6" HorizontalAlignment="Center" TextAlignment="Center"
-                               TextTrimming="CharacterEllipsis" MaxWidth="420"/>
+                    <StackPanel x:Name="AudioTexts" Margin="0,18,0,0">
+                        <TextBlock x:Name="AudioTitle" FontFamily="{StaticResource Font.Display}" FontSize="19" FontWeight="SemiBold" Margin="0,0,0,2" Foreground="White"
+                                   HorizontalAlignment="Center" TextAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock x:Name="AudioArtist" FontSize="13.5" Foreground="#A1A1A6" HorizontalAlignment="Center" TextAlignment="Center"
+                                   TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+                    <pl:WaveformView x:Name="Wave" Height="120" Margin="0,22,0,0" MaxWidth="1100"/>
                 </StackPanel>
             </Grid>
 
@@ -56,70 +80,7 @@
             </StackPanel>
         </Grid>
 
-        <!-- ===== iPhone-like trim panel ===== -->
-        <Border x:Name="TrimPanel" Grid.Row="1" Visibility="Collapsed" Background="#161618" BorderBrush="#2C2C2E" BorderThickness="0,1,0,0" Padding="16,14,16,14">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <Button x:Name="TrimPlayBtn" Style="{StaticResource Hud.IconButton}" Width="46" Height="58" Background="#2C2C2E" Click="TrimPlay_Click">
-                        <ui:IconView x:Name="TrimPlayIcon" Icon="play" Width="20" Height="20"/>
-                    </Button>
-                    <pl:TrimBar x:Name="Trim" Grid.Column="1" Height="58" Margin="10,0,0,0"/>
-                </Grid>
-                <Grid Grid.Row="1" Margin="0,12,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
-                        <Button Style="{StaticResource Hud.Button}" Content="{core:Loc Player.Cancel}" Click="TrimCancel_Click" Background="#2C2C2E"/>
-                        <Border Background="#2C2C2E" CornerRadius="8" Padding="2" Margin="10,0,0,0">
-                            <StackPanel Orientation="Horizontal">
-                                <RadioButton x:Name="ModeTrim" Style="{StaticResource HudSegment.Item}" GroupName="trimmode" IsChecked="True"
-                                             ToolTip="{core:Loc Player.ModeTrimTip}" Checked="Mode_Checked">
-                                    <StackPanel Orientation="Horizontal">
-                                        <ui:IconView Icon="scissors" Width="14" Height="14" Margin="0,0,6,0"/>
-                                        <TextBlock Text="{core:Loc Player.ModeTrim}"/>
-                                    </StackPanel>
-                                </RadioButton>
-                                <RadioButton x:Name="ModeCut" Style="{StaticResource HudSegment.Item}" GroupName="trimmode"
-                                             ToolTip="{core:Loc Player.ModeCutTip}" Checked="Mode_Checked">
-                                    <StackPanel Orientation="Horizontal">
-                                        <ui:IconView Icon="cutout" Width="14" Height="14" Margin="0,0,6,0"/>
-                                        <TextBlock Text="{core:Loc Player.ModeCut}"/>
-                                    </StackPanel>
-                                </RadioButton>
-                            </StackPanel>
-                        </Border>
-                    </StackPanel>
-                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="12,0">
-                        <TextBlock x:Name="TrimTimes" FontSize="13" FontWeight="SemiBold" HorizontalAlignment="Center"/>
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,2,0,0">
-                            <ui:IconView Icon="check" Width="12" Height="12" Foreground="#30D158" StrokeWidth="2.6" Margin="0,0,4,0"/>
-                            <TextBlock x:Name="TrimInfo" FontSize="11.5" Foreground="#A1A1A6" Text="{core:Loc Player.Lossless}"/>
-                        </StackPanel>
-                    </StackPanel>
-                    <StackPanel x:Name="TrimButtons" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button x:Name="SaveNewBtn" Style="{StaticResource Hud.Button}" Content="{core:Loc Player.SaveNew}" Click="SaveNew_Click" Margin="0,0,8,0" Background="#2C2C2E"/>
-                        <Button x:Name="ReplaceBtn" Style="{StaticResource Hud.Yellow}" Content="{core:Loc Player.Replace}" Click="Replace_Click"/>
-                    </StackPanel>
-                    <StackPanel x:Name="TrimProgress" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Visibility="Collapsed">
-                        <TextBlock Text="{core:Loc Player.Saving}" VerticalAlignment="Center" Margin="0,0,10,0" Foreground="#E5E5EA"/>
-                        <Grid Width="150" Height="5" VerticalAlignment="Center">
-                            <Border CornerRadius="2.5" Background="#3A3A3C"/>
-                            <Border x:Name="TrimProgressFill" CornerRadius="2.5" Background="#FFD60A" HorizontalAlignment="Left" Width="0"/>
-                        </Grid>
-                    </StackPanel>
-                </Grid>
-            </Grid>
-        </Border>
+        <!-- ===== video editor (cuts, joins, captions, emoji, banner, format) ===== -->
+        <ed:VideoEditor x:Name="Editor" Grid.Row="1" Visibility="Collapsed"/>
     </Grid>
 </Window>

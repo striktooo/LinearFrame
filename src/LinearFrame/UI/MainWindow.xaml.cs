@@ -268,6 +268,12 @@ public partial class MainWindow : Window
     private void OpenShot(string path)
     {
         if (!File.Exists(path)) { ScheduleShotsReload(); return; }
+        App.Instance?.OpenImage(path);
+    }
+
+    private void EditShot(string path)
+    {
+        if (!File.Exists(path)) { ScheduleShotsReload(); return; }
         App.Instance?.OpenImageInEditor(path);
     }
 
@@ -276,7 +282,8 @@ public partial class MainWindow : Window
         Native.GetCursorPos(out var p);
         var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
         new NativeMenu()
-            .Add(L.T("Screens.Edit"), () => OpenShot(path), isDefault: true)
+            .Add(L.T("Screens.Open"), () => OpenShot(path), isDefault: true)
+            .Add(L.T("Screens.Edit"), () => EditShot(path))
             .Add(L.T("Screens.Copy"), () =>
             {
                 var bmp = ImageIO.LoadFull(path);
@@ -311,7 +318,7 @@ public partial class MainWindow : Window
     {
         DropZone_DragLeave(sender, e);
         if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
-            App.Instance?.OpenMedia(files[0]);
+            App.Instance?.OpenAny(files[0]);
     }
 
     public void RefreshRecent()

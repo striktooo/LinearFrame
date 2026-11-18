@@ -13,7 +13,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon Condition="Exists('Assets\LinearFrame.ico')">Assets\LinearFrame.ico</ApplicationIcon>
 
-    <Version>1.0.2</Version>
+    <Version>1.1.0</Version>
     <Product>LinearFrame</Product>
     <Description>Screenshots, media player and quick lossless trimming for Windows.</Description>
     <Copyright>LinearFrame contributors</Copyright>
@@ -51,6 +51,8 @@
 
   <ItemGroup>
     <Resource Include="Assets\LinearFrame.ico" Condition="Exists('Assets\LinearFrame.ico')" />
+    <!-- caption font of the video editor (TikTok Sans SemiBold, SIL Open Font License - see Assets\Fonts\OFL.txt) -->
+    <Resource Include="Assets\Fonts\*.ttf" />
   </ItemGroup>
 
   <!-- Playback engine (libmpv) and ffmpeg live in an "engine" folder next to the exe -->

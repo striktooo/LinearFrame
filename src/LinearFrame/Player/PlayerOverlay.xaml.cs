@@ -23,8 +23,11 @@ public partial class PlayerOverlay : Window
     private bool _pressed;
     private Point _pressPos;
     private Point _lastMove;
+    private bool _waveDrag;
+    private System.Windows.Media.Brush? _topShade;
 
     public bool ControlsVisible => _visible;
+    public IntPtr Handle => _hwnd;
     public event Action? ControlsVisibilityChanged;
 
     // This window is a transient visual layer over the video; keyboard control lives in the player window.
@@ -41,6 +44,7 @@ public partial class PlayerOverlay : Window
     {
         InitializeComponent();
         _player = player;
+        _topShade = TopBar.Background;
         _hideTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2600) };
         _hideTimer.Tick += (_, _) =>
         {
@@ -61,10 +65,22 @@ public partial class PlayerOverlay : Window
             HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
         };
 
+        // a click anywhere (also on a caption the editor's layer takes) gives the player the keyboard
+        PreviewMouseLeftButtonDown += (_, _) => _player.ActivatePlayer();
         MouseMove += OnMouseMoveAny;
-        MouseLeave += (_, _) => { if (!_pressed) ScheduleHide(700); };
+        MouseLeave += (_, _) =>
+        {
+            if (!_waveDrag) _player.WaveformHover(null);
+            if (!_pressed) ScheduleHide(700);
+        };
         MouseLeftButtonDown += OnDown;
         MouseLeftButtonUp += OnUp;
+        LostMouseCapture += (_, e) =>
+        {
+            if (!_waveDrag) return;
+            _waveDrag = false; // e.g. another window popped up mid-drag: finish where we are
+            _player.WaveformSeek(_player.WaveformFraction(e.GetPosition(this)), final: true);
+        };
         MouseRightButtonUp += (_, e) => { e.Handled = true; _player.ShowMoreMenu(null); };
         MouseWheel += (_, e) => { _player.ChangeVolume(e.Delta > 0 ? 5 : -5); ShowControls(); };
         DragEnter += (_, e) => { if (e.Data.GetDataPresent(DataFormats.FileDrop)) { DropHint.Visibility = Visibility.Visible; e.Effects = DragDropEffects.Copy; } };
@@ -72,7 +88,11 @@ public partial class PlayerOverlay : Window
         Drop += (_, e) =>
         {
             DropHint.Visibility = Visibility.Collapsed;
-            if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0) _player.OpenFile(files[0]);
+            if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
+            {
+                if (MediaFormats.IsImage(files[0])) App.Instance?.OpenImage(files[0]); // pictures have their own viewer
+                else _player.OpenFile(files[0]);
+            }
         };
     }
 
@@ -89,12 +109,13 @@ public partial class PlayerOverlay : Window
                 return new IntPtr(Native.MA_NOACTIVATE);
             case Native.WM_NCHITTEST:
             {
-                if (_fullscreen || _player.WindowState == WindowState.Maximized || _editMode) break;
+                if (_fullscreen || _player.WindowState == WindowState.Maximized) break;
                 int x = Native.LoWord(lParam), y = Native.HiWord(lParam);
                 Native.GetWindowRect(hwnd, out var r);
                 double k = Native.GetDpiForWindow(hwnd) / 96.0;
                 int b = (int)Math.Ceiling(ResizeBorder * k);
                 bool l = x < r.Left + b, rt = x >= r.Right - b, t = y < r.Top + b, bt = y >= r.Bottom - b;
+                if (_editMode) bt = false; // the editor panel lies under the video: the window's bottom edge is down there
                 int code = (t, bt, l, rt) switch
                 {
                     (true, _, true, _) => Native.HTTOPLEFT,
@@ -146,8 +167,12 @@ public partial class PlayerOverlay : Window
         _editMode = edit;
         _fullscreen = fullscreen;
         WindowButtons.Visibility = fullscreen ? Visibility.Collapsed : Visibility.Visible;
+        TitleText.Visibility = audio || edit ? Visibility.Collapsed : Visibility.Visible; // a song shows its title under the cover
         EditBtn.Visibility = edit || !canEdit ? Visibility.Collapsed : Visibility.Visible;
         Controls.Visibility = edit ? Visibility.Collapsed : Visibility.Visible;
+        // while editing, the picture belongs to the captions: no shade over its top, only the window buttons stay
+        EditLayer.Visibility = edit ? Visibility.Visible : Visibility.Collapsed;
+        TopBar.Background = edit ? null : _topShade;
         FullIcon.Icon = fullscreen ? "unfullscreen" : "fullscreen";
         MaxIcon.Icon = maximized ? "restore" : "maximize";
         FullBtn.Visibility = audio ? Visibility.Collapsed : Visibility.Visible;
@@ -228,6 +253,19 @@ public partial class PlayerOverlay : Window
             _lastMove = p;
             ShowControls();
         }
+        if (_waveDrag)
+        {
+            double f = _player.WaveformFraction(p);
+            _player.WaveformHover(f);
+            _player.WaveformSeek(f, final: false);
+            return;
+        }
+        if (_audioMode)
+        {
+            bool onWave = !IsOverControl(e.OriginalSource as DependencyObject) && _player.WaveformHit(p, out _);
+            _player.WaveformHover(onWave ? _player.WaveformFraction(p) : null);
+            Cursor = onWave ? Cursors.Hand : null;
+        }
         if (_pressed && e.LeftButton == MouseButtonState.Pressed && (p - _pressPos).Length > 5 && !_fullscreen && _player.WindowState != WindowState.Maximized)
         {
             _pressed = false;
@@ -235,12 +273,13 @@ public partial class PlayerOverlay : Window
         }
     }
 
-    private bool IsOnControl(MouseButtonEventArgs e)
+    private bool IsOnControl(MouseButtonEventArgs e) => IsOverControl(e.OriginalSource as DependencyObject);
+
+    private bool IsOverControl(DependencyObject? d)
     {
-        var d = e.OriginalSource as DependencyObject;
         while (d != null && d != this)
         {
-            if (d == Controls || d == EditBtn || d == WindowButtons) return true;
+            if (d == Controls || d == WindowButtons) return true;
             d = System.Windows.Media.VisualTreeHelper.GetParent(d);
         }
         return false;
@@ -250,6 +289,17 @@ public partial class PlayerOverlay : Window
     {
         _player.ActivatePlayer();
         if (IsOnControl(e)) return;
+        if (_audioMode && _player.WaveformHit(e.GetPosition(this), out double f))
+        {
+            // the song's waveform: click or drag to jump there
+            _pressed = false;
+            _waveDrag = true;
+            CaptureMouse();
+            _player.WaveformHover(f);
+            _player.WaveformSeek(f, final: false);
+            e.Handled = true;
+            return;
+        }
         if (e.ClickCount == 2)
         {
             _pressed = false;
@@ -262,6 +312,16 @@ public partial class PlayerOverlay : Window
 
     private void OnUp(object sender, MouseButtonEventArgs e)
     {
+        if (_waveDrag)
+        {
+            _waveDrag = false;
+            ReleaseMouseCapture();
+            var p = e.GetPosition(this);
+            _player.WaveformSeek(_player.WaveformFraction(p), final: true);
+            _player.WaveformHover(_player.WaveformHit(p, out double f) ? f : null);
+            e.Handled = true;
+            return;
+        }
         if (!_pressed) return;
         _pressed = false;
         if (IsOnControl(e)) return;

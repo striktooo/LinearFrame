@@ -184,16 +184,24 @@ internal static class Ffmpeg
     /// Keyframe timestamps (seconds) of the first video stream. Reads packets from the container without decoding
     /// (the framecrc muxer marks every non-keyframe with "F=..."), so it is about as fast as reading the file.
     /// </summary>
-    public static async Task<double[]?> Keyframes(string file, CancellationToken ct)
+    public static async Task<double[]?> Keyframes(string file, CancellationToken ct) => (await KeyframeScan(file, ct)).Keyframes;
+
+    /// <summary>
+    /// Keyframe times of the first video track, and whether its frames are stored out of display order (B-frames) -
+    /// stream-copied pieces of such a video don't join frame-exactly.
+    /// </summary>
+    public static async Task<(double[]? Keyframes, bool Reordered)> KeyframeScan(string file, CancellationToken ct)
     {
-        if (!Available) return null;
+        if (!Available) return (null, true);
         var args = new List<string> { "-hide_banner", "-nostdin", "-loglevel", "error", "-i", file, "-map", "0:v:0", "-c", "copy", "-f", "framecrc", "pipe:1" };
         using var p = Process.Start(Start(args));
-        if (p == null) return null;
+        if (p == null) return (null, true);
         try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { /* exited already */ }
         var errTask = p.StandardError.ReadToEndAsync(ct);
         var list = new List<double>();
         double tbNum = 1, tbDen = 1000;
+        long maxPts = long.MinValue;
+        bool reordered = false;
         try
         {
             string? line;
@@ -217,18 +225,21 @@ internal static class Ffmpeg
                     if (f.StartsWith("F=0x") && int.TryParse(f[4..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int flags))
                         key = (flags & 1) != 0 && (flags & 4) == 0;
                 }
-                if (key && long.TryParse(parts[2].Trim(), out long pts)) list.Add(pts * tbNum / tbDen);
+                if (!long.TryParse(parts[2].Trim(), out long pts)) continue;
+                if (pts < maxPts) reordered = true;
+                maxPts = Math.Max(maxPts, pts);
+                if (key) list.Add(pts * tbNum / tbDen);
             }
             await p.WaitForExitAsync(ct);
         }
         catch (OperationCanceledException)
         {
             try { p.Kill(true); } catch { /* gone */ }
-            return null;
+            return (null, true);
         }
-        if (list.Count == 0) return null;
+        if (list.Count == 0) return (null, reordered);
         list.Sort();
-        return list.ToArray();
+        return (list.ToArray(), reordered);
     }
 
     /// <summary>
@@ -318,6 +329,64 @@ internal static class Ffmpeg
         finally
         {
             foreach (var f in new[] { part1, part2, list }) { try { if (File.Exists(f)) File.Delete(f); } catch { /* temp */ } }
+        }
+    }
+
+    /// <summary>
+    /// Keeps several pieces of one file and joins them - without re-encoding (the general case of <see cref="CutOut"/>).
+    /// FFmpeg's concat list reads the pieces straight from the file (in and out points), so every piece lasts exactly as
+    /// long as it should and no temporary files are needed. Every piece after the first must start on a keyframe, and the
+    /// video must not have B-frames (<see cref="KeyframeScan"/>) - then the joins are exact to the frame.
+    /// </summary>
+    public static async Task<(bool ok, string error)> CopyPieces(string input, string output, List<(double In, double Out)> pieces, double[]? keyframes, IProgress<double>? progress, CancellationToken ct)
+    {
+        if (!Available) return (false, "ffmpeg.exe not found");
+        if (pieces.Count == 1) return await Trim(input, output, pieces[0].In, pieces[0].Out, progress, ct);
+        var ext = Path.GetExtension(input).ToLowerInvariant();
+        var dir = Path.GetDirectoryName(Path.GetFullPath(output))!;
+        var list = Path.Combine(dir, $".lf-list-{Guid.NewGuid().ToString("N")[..8]}.ffconcat");
+        double total = pieces.Sum(p => p.Out - p.In);
+        static string T(double v) => v.ToString("0.######", CultureInfo.InvariantCulture);
+        static string Esc(string p) => p.Replace('\\', '/').Replace("'", "'\\''");
+
+        var sb = new StringBuilder("ffconcat version 1.0\n");
+        string src = Esc(Path.GetFullPath(input));
+        foreach (var (a, b) in pieces)
+        {
+            sb.Append($"file '{src}'\n");
+            if (a > 0.0005) sb.Append($"inpoint {T(a)}\n");
+            sb.Append($"outpoint {T(b)}\n");
+        }
+
+        List<string> Join(bool withSubs)
+        {
+            var x = new List<string> { "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
+                "-f", "concat", "-safe", "0", "-i", list, "-t", "0", "-i", input, "-map", "0:v?", "-map", "0:a?" };
+            if (withSubs) x.AddRange(new[] { "-map", "0:s?" });
+            x.AddRange(new[] { "-c", "copy", "-map_metadata", "1" });
+            // MP4/MOV: an edit list hides what comes before the first piece's start (it may begin between keyframes)
+            if (!MediaFormats.IsMp4Family(input)) x.AddRange(new[] { "-avoid_negative_ts", "make_zero" });
+            else x.AddRange(new[] { "-movflags", "+use_metadata_tags" });
+            if (ext == ".mp3") x.AddRange(new[] { "-id3v2_version", "3", "-write_xing", "1" });
+            x.AddRange(new[] { "-progress", "pipe:1", "-nostats", output });
+            return x;
+        }
+
+        try
+        {
+            await File.WriteAllTextAsync(list, sb.ToString(), ct);
+            var (ok, err) = await RunTrim(Join(withSubs: true), total, progress, ct);
+            if (!ok && !ct.IsCancellationRequested)
+            {
+                Log.Warn($"Piece copy with subtitles failed ({err}), retrying without");
+                (ok, err) = await RunTrim(Join(withSubs: false), total, progress, ct);
+            }
+            if (!ok) { try { if (File.Exists(output)) File.Delete(output); } catch { /* ignore */ } }
+            return (ok, err);
+        }
+        finally
+        {
+            try { if (File.Exists(list)) File.Delete(list); } catch { /* temp */ }
         }
     }
 

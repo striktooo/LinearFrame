@@ -331,20 +331,251 @@ internal sealed class MouseShortcutHook : IDisposable
     }
 }
 
-/// <summary>"Start with Windows" through the per-user Run key (no admin rights needed).</summary>
+/// <summary>
+/// "Start with Windows". Programs in the Run key are held back by Windows for 20–30 s after you sign in, so a
+/// screenshot right after a restart did nothing. A scheduled task of your own with a sign-in trigger starts LinearFrame
+/// at once - it needs no admin rights. Where the task can't be created, the Run key is used as before.
+/// Everything here talks to Task Scheduler / the registry: call it off the UI thread.
+/// </summary>
 internal static class Autostart
 {
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string ApprovedKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+    /// <summary>Bumped when the task definition changes - older tasks are then rewritten.</summary>
+    private const string DefinitionVersion = "1";
+    private static readonly object Gate = new();
 
+    public enum TaskState { Missing, Current, Outdated, Disabled }
+
+    /// <summary>Task names are per computer, so every Windows user gets their own.</summary>
+    public static string TaskName
+    {
+        get
+        {
+            var user = new string(Environment.UserName.Where(c => "\\/:*?\"<>|".IndexOf(c) < 0).ToArray()).Trim();
+            return $"{AppPaths.AppName} ({(user.Length > 0 ? user : "user")})";
+        }
+    }
+
+    /// <summary>The switch in Settings was flipped.</summary>
     public static void Apply(bool enable)
+    {
+        lock (Gate)
+        {
+            try
+            {
+                if (enable)
+                {
+                    ClearTaskManagerSwitch();
+                    if (Query(TaskName, AppPaths.ExePath) == TaskState.Current || Register(TaskName, AppPaths.ExePath)) RemoveRunValue();
+                    else WriteRunValue();
+                }
+                else
+                {
+                    Delete(TaskName);
+                    RemoveRunValue();
+                }
+            }
+            catch (Exception ex) { Log.Error("Autostart change failed", ex); }
+        }
+    }
+
+    /// <summary>
+    /// At every start: make sure LinearFrame really starts at sign-in (moves the old Run entry over to the task, follows
+    /// a moved folder). If you switched it off outside the app - in Task Manager's "Startup apps" or in Task Scheduler -
+    /// that wins: returns false and the setting should follow.
+    /// </summary>
+    public static bool EnsureOnStart()
+    {
+        lock (Gate)
+        {
+            try
+            {
+                bool runEntry = RunValueExists();
+                if (runEntry && SwitchedOffInTaskManager())
+                {
+                    RemoveRunValue();
+                    ClearTaskManagerSwitch();
+                    Log.Info("Autostart: switched off in Task Manager - setting follows");
+                    return false;
+                }
+                var state = Query(TaskName, AppPaths.ExePath);
+                if (state == TaskState.Disabled)
+                {
+                    RemoveRunValue();
+                    Log.Info("Autostart: the task is disabled in Task Scheduler - setting follows");
+                    return false;
+                }
+                if (state == TaskState.Current)
+                {
+                    if (runEntry) RemoveRunValue();
+                    return true;
+                }
+                if (Register(TaskName, AppPaths.ExePath))
+                {
+                    RemoveRunValue();
+                    ClearTaskManagerSwitch();
+                    Log.Info($"Autostart: sign-in task '{TaskName}' {(state == TaskState.Missing ? "created" : "updated")}");
+                }
+                else WriteRunValue();
+            }
+            catch (Exception ex) { Log.Error("Autostart check failed", ex); }
+            return true;
+        }
+    }
+
+    // ------------------------------------------------------------------ Task Scheduler (COM, no admin rights)
+
+    private static dynamic? RootFolder()
+    {
+        var t = Type.GetTypeFromProgID("Schedule.Service");
+        if (t == null) return null;
+        dynamic svc = Activator.CreateInstance(t)!;
+        svc.Connect();
+        return svc.GetFolder("\\");
+    }
+
+    internal static string BuildXml(string exe)
+    {
+        string user = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value ?? $"{Environment.UserDomainName}\\{Environment.UserName}";
+        static string E(string? s) => System.Security.SecurityElement.Escape(s ?? "") ?? "";
+        // Priority 5 = a normal process (a task's default, 7, would make LinearFrame "below normal").
+        // No time limit (the default stops a task after 3 days), and it also starts on battery power.
+        return $"""
+            <?xml version="1.0" encoding="UTF-16"?>
+            <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+              <RegistrationInfo>
+                <Author>LinearFrame</Author>
+                <Version>{DefinitionVersion}</Version>
+                <Description>{E(L.T("Startup.TaskDescription"))}</Description>
+              </RegistrationInfo>
+              <Triggers>
+                <LogonTrigger>
+                  <Enabled>true</Enabled>
+                  <UserId>{E(user)}</UserId>
+                </LogonTrigger>
+              </Triggers>
+              <Principals>
+                <Principal id="Author">
+                  <UserId>{E(user)}</UserId>
+                  <LogonType>InteractiveToken</LogonType>
+                  <RunLevel>LeastPrivilege</RunLevel>
+                </Principal>
+              </Principals>
+              <Settings>
+                <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+                <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+                <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+                <AllowHardTerminate>true</AllowHardTerminate>
+                <StartWhenAvailable>false</StartWhenAvailable>
+                <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+                <IdleSettings>
+                  <StopOnIdleEnd>false</StopOnIdleEnd>
+                  <RestartOnIdle>false</RestartOnIdle>
+                </IdleSettings>
+                <AllowStartOnDemand>true</AllowStartOnDemand>
+                <Enabled>true</Enabled>
+                <Hidden>false</Hidden>
+                <RunOnlyIfIdle>false</RunOnlyIfIdle>
+                <WakeToRun>false</WakeToRun>
+                <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+                <Priority>5</Priority>
+              </Settings>
+              <Actions Context="Author">
+                <Exec>
+                  <Command>"{E(exe)}"</Command>
+                  <Arguments>--tray</Arguments>
+                  <WorkingDirectory>{E(Path.GetDirectoryName(exe))}</WorkingDirectory>
+                </Exec>
+              </Actions>
+            </Task>
+            """;
+    }
+
+    internal static bool Register(string name, string exe)
     {
         try
         {
-            using var key = Registry.CurrentUser.CreateSubKey(RunKey);
-            if (enable) key.SetValue(AppPaths.AppName, $"\"{AppPaths.ExePath}\" --tray");
-            else key.DeleteValue(AppPaths.AppName, false);
+            var root = RootFolder();
+            if (root == null) return false;
+            // 6 = create or update, 3 = run as the signed-in user (no password stored)
+            root.RegisterTask(name, BuildXml(exe), 6, null, null, 3, null);
+            return true;
         }
-        catch (Exception ex) { Log.Error("Autostart change failed", ex); }
+        catch (Exception ex)
+        {
+            Log.Warn($"Autostart: sign-in task could not be registered ({ex.Message}) - using the Run key");
+            return false;
+        }
+    }
+
+    internal static TaskState Query(string name, string exe)
+    {
+        string xml;
+        try
+        {
+            var root = RootFolder();
+            if (root == null) return TaskState.Missing;
+            dynamic task = root.GetTask(name);
+            xml = (string)task.Xml;
+        }
+        catch { return TaskState.Missing; }
+        try
+        {
+            var doc = System.Xml.Linq.XDocument.Parse(xml);
+            System.Xml.Linq.XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
+            var task = doc.Root!;
+            var trigger = task.Element(ns + "Triggers")?.Element(ns + "LogonTrigger");
+            if (task.Element(ns + "Settings")?.Element(ns + "Enabled")?.Value == "false" || trigger?.Element(ns + "Enabled")?.Value == "false")
+                return TaskState.Disabled;
+            var exec = task.Element(ns + "Actions")?.Element(ns + "Exec");
+            string cmd = (exec?.Element(ns + "Command")?.Value ?? "").Trim().Trim('"');
+            bool current = trigger != null
+                && string.Equals(cmd, exe, StringComparison.OrdinalIgnoreCase)
+                && (exec?.Element(ns + "Arguments")?.Value ?? "").Trim() == "--tray"
+                && task.Element(ns + "RegistrationInfo")?.Element(ns + "Version")?.Value == DefinitionVersion;
+            return current ? TaskState.Current : TaskState.Outdated;
+        }
+        catch { return TaskState.Outdated; }
+    }
+
+    internal static void Delete(string name)
+    {
+        try { RootFolder()?.DeleteTask(name, 0); }
+        catch { /* not there */ }
+    }
+
+    // ------------------------------------------------------------------ Run key (fallback) and Task Manager's switch
+
+    private static bool RunValueExists()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RunKey);
+        return key?.GetValue(AppPaths.AppName) != null;
+    }
+
+    private static void WriteRunValue()
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(RunKey);
+        key.SetValue(AppPaths.AppName, $"\"{AppPaths.ExePath}\" --tray");
+    }
+
+    private static void RemoveRunValue()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
+        key?.DeleteValue(AppPaths.AppName, false);
+    }
+
+    /// <summary>Task Manager → Startup apps keeps its on/off switch here (odd first byte = off).</summary>
+    private static bool SwitchedOffInTaskManager()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(ApprovedKey);
+        return key?.GetValue(AppPaths.AppName) is byte[] b && b.Length > 0 && (b[0] & 1) == 1;
+    }
+
+    private static void ClearTaskManagerSwitch()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(ApprovedKey, writable: true);
+        key?.DeleteValue(AppPaths.AppName, false);
     }
 }
 

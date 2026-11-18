@@ -10,11 +10,12 @@ using System.Windows.Shell;
 using LinearFrame.Capture;
 using LinearFrame.Core;
 using LinearFrame.Imaging;
+using LinearFrame.Player.Edit;
 using LinearFrame.UI;
 
 namespace LinearFrame.Player;
 
-/// <summary>QuickTime-like player window: native mpv video surface + transparent control overlay + iPhone-style trimming.</summary>
+/// <summary>QuickTime-like player window: native mpv video surface + transparent control overlay + the video editor under it.</summary>
 public partial class PlayerWindow : Window
 {
     private readonly MpvHost _host = new();
@@ -35,14 +36,9 @@ public partial class PlayerWindow : Window
     private WindowState _restoreState;
 
     private bool _editMode;
-    private bool _saving;
-    private double _trimStart, _trimEnd;
-    private CancellationTokenSource? _thumbCts;
     private double _panelGrow;
-    private bool _cutMode;
-    private double[]? _keyframes;
-    private CancellationTokenSource? _kfCts;
-    private long _lastSkipTick;
+    private CancellationTokenSource? _waveCts;
+    private bool _waveDragging;
 
     public IntPtr Handle => _hwnd;
     public bool IsPaused => _mpv?.Paused ?? true;
@@ -60,15 +56,19 @@ public partial class PlayerWindow : Window
             HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
         };
         Loaded += OnLoaded;
+        Closing += OnClosing;
         Closed += OnClosed;
         LocationChanged += (_, _) => UpdateOverlayBounds();
         SizeChanged += (_, _) => UpdateOverlayBounds();
-        StateChanged += (_, _) => { UpdateOverlayBounds(); UpdateOverlayModes(); };
+        StateChanged += (_, _) => { UpdateOverlayBounds(); UpdateOverlayModes(); if (_editMode) Editor.OnMoved(); };
         Activated += (_, _) => _overlay?.ShowControls();
-        VideoArea.SizeChanged += (_, _) => UpdateOverlayBounds();
-
-        Trim.RangeChanged += OnTrimRangeChanged;
-        Trim.Scrubbed += (t, final) => _mpv?.CommandAsync("seek", F(t), final ? "absolute+exact" : "absolute+keyframes");
+        VideoArea.SizeChanged += (_, _) =>
+        {
+            UpdateOverlayBounds();
+            if (_editMode) Editor.OnLayoutChanged();
+        };
+        AudioView.SizeChanged += (_, _) => UpdateAudioLayout();
+        Editor.Finished += OnEditorFinished;
     }
 
     private static string F(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
@@ -111,9 +111,16 @@ public partial class PlayerWindow : Window
         }
     }
 
+    private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        // unsaved edits: ask first, like when leaving the editor
+        if (_editMode && !Editor.ConfirmLeave()) e.Cancel = true;
+    }
+
     private void OnClosed(object? sender, EventArgs e)
     {
-        _thumbCts?.Cancel();
+        if (_editMode) Editor.End(reloadOriginal: false);
+        _waveCts?.Cancel();
         if (_mpv != null)
         {
             _s.PlayerVolume = _mpv.Volume;
@@ -127,10 +134,12 @@ public partial class PlayerWindow : Window
         _overlay = null;
     }
 
+    /// <summary>Opens a file; <paramref name="edit"/> goes straight into the editor (the old "cut" entry lands there too).</summary>
     public void OpenFile(string path, bool edit = false, bool cut = false)
     {
-        _editWhenLoaded = edit;
-        if (cut) _cutMode = true;
+        // another file while editing: unsaved changes are not thrown away without asking
+        if (_editMode && !Editor.ConfirmLeave()) { WindowHelper.BringToFront(this); return; }
+        _editWhenLoaded = edit || cut;
         if (!IsLoaded || _mpv == null)
         {
             _pendingOpen = path;
@@ -144,7 +153,7 @@ public partial class PlayerWindow : Window
 
     private void Load(string path)
     {
-        if (_editMode) ExitEditMode();
+        if (_editMode) ExitEditMode(reloadOriginal: false);
         _path = path;
         _isAudio = MediaFormats.IsAudio(path);
         _hasVideo = !_isAudio;
@@ -153,8 +162,16 @@ public partial class PlayerWindow : Window
         _overlay?.SetTitle(Path.GetFileName(path));
         MessageView.Visibility = Visibility.Collapsed;
         ApplyAudioMode(_isAudio);
+        _waveCts?.Cancel();
+        _waveDragging = false;
+        Wave.SetPeaks(null);
+        Wave.Hover = null;
+        Wave.Position = 0;
+        Wave.Duration = 0;
         _mpv?.SetProperty("ab-loop-a", "no");
         _mpv?.SetProperty("ab-loop-b", "no");
+        // an animated GIF / WebP plays in a loop, like everywhere else
+        _mpv?.SetProperty("loop-file", MediaFormats.IsAnimatedImage(path) ? "inf" : "no");
         _mpv?.Command("loadfile", path, "replace");
         _mpv?.SetProperty("pause", "no");
         UpdateOverlayModes();
@@ -173,6 +190,12 @@ public partial class PlayerWindow : Window
     private void OnFileLoaded()
     {
         if (_mpv == null) return;
+        if (_editMode)
+        {
+            // the editor plays its own timeline (the kept pieces as one EDL) - nothing about the file changes
+            Editor.OnFileLoaded();
+            return;
+        }
         var tracks = _mpv.Tracks();
         _hasVideo = tracks.Any(t => t.Type == "video" && !t.AlbumArt);
         _isAudio = !_hasVideo;
@@ -183,15 +206,20 @@ public partial class PlayerWindow : Window
             var artist = _mpv.GetString("metadata/by-key/artist") ?? _mpv.GetString("metadata/by-key/Artist") ?? _mpv.GetString("metadata/by-key/album_artist");
             AudioTitle.Text = string.IsNullOrWhiteSpace(title) ? Path.GetFileNameWithoutExtension(_path) : title;
             AudioArtist.Text = artist ?? "";
+            AudioArtist.Visibility = string.IsNullOrWhiteSpace(artist) ? Visibility.Collapsed : Visibility.Visible;
             _ = LoadCoverArt(_path!);
-            if (_layoutForNewFile && !_fullscreen && WindowState == WindowState.Normal) ResizeForContent(460, 480);
+            double dur = _mpv.GetDouble("duration") ?? _mpv.Duration;
+            Wave.Duration = dur;
+            LoadWaveform(_path!, dur);
+            if (_layoutForNewFile && !_fullscreen && WindowState == WindowState.Normal) ResizeForContent(680, 500);
             _layoutForNewFile = false;
+            UpdateAudioLayout();
         }
         UpdateOverlayModes();
         if (_editWhenLoaded)
         {
             _editWhenLoaded = false;
-            Dispatcher.BeginInvoke(new Action(EnterEditMode), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            Dispatcher.BeginInvoke(new Action(EnterEditMode), System.Windows.Threading.DispatcherPriority.Background);
         }
     }
 
@@ -206,6 +234,86 @@ public partial class PlayerWindow : Window
         ArtImageHost.Visibility = Visibility.Visible;
         ArtIcon.Visibility = Visibility.Collapsed;
     }
+
+    // =============================================================== audio: waveform + layout
+
+    /// <summary>Reads the whole song's loudness envelope with FFmpeg (well under a second for a normal song).</summary>
+    private async void LoadWaveform(string path, double duration)
+    {
+        _waveCts?.Cancel();
+        if (!Ffmpeg.Available) return;
+        var cts = _waveCts = new CancellationTokenSource();
+        try
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var peaks = await Ffmpeg.Waveform(path, 1200, duration, cts.Token);
+            if (cts.IsCancellationRequested || path != _path) return;
+            Wave.SetPeaks(peaks);
+            Log.Info($"Waveform {(peaks == null ? "failed" : "ready")} in {sw.ElapsedMilliseconds} ms");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Log.Error("Waveform failed", ex); }
+    }
+
+    /// <summary>
+    /// Cover, title and waveform share the room between the window buttons and the control pill: a small window shows
+    /// a small cover (or none) and a slim waveform, a big one a big cover and a tall, finely detailed waveform.
+    /// </summary>
+    internal void UpdateAudioLayout(bool force = false)
+    {
+        if (!_isAudio && !force) return;
+        double w = AudioView.ActualWidth, h = AudioView.ActualHeight;
+        if (w <= 0 || h <= 0) return;
+        double room = Math.Max(0, h - 42 - 112);
+        double texts = AudioArtist.Visibility == Visibility.Visible ? 48 : 28;
+        double wave = Math.Clamp(room * 0.34, 48, 230);
+        double art = Math.Min(240, room - wave - texts - 18 - 22 - 8);
+        if (art < 72) art = 0;                                         // no room for a cover
+        bool showTexts = room >= wave + texts + 22;                    // tiny window: only the waveform
+        if (!showTexts) wave = Math.Clamp(room - 8, 24, 230);
+
+        ArtBorder.Visibility = art > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ArtBorder.Width = ArtBorder.Height = Math.Max(1, art);
+        var radius = new CornerRadius(Math.Round(Math.Max(8, art * 0.08)));
+        ArtBorder.CornerRadius = radius;
+        ArtImageHost.CornerRadius = radius;
+        ArtIcon.Width = ArtIcon.Height = Math.Max(24, art * 0.4);
+        AudioTexts.Visibility = showTexts ? Visibility.Visible : Visibility.Collapsed;
+        AudioTexts.Margin = new Thickness(0, art > 0 ? 18 : 0, 0, 0);
+        AudioTitle.FontSize = art >= 170 ? 22 : 19;
+        AudioTitle.MaxWidth = AudioArtist.MaxWidth = Math.Max(120, w - 64);
+        Wave.Height = wave;
+        Wave.Margin = new Thickness(0, showTexts ? 22 : 0, 0, 0);
+    }
+
+    // ---- called by the overlay, which owns the mouse (the waveform lies underneath it)
+
+    /// <summary>The point (overlay = video area coordinates) is on the waveform: where in the song (0..1).</summary>
+    public bool WaveformHit(Point p, out double fraction)
+    {
+        fraction = 0;
+        if (!_isAudio || _editMode || AudioView.Visibility != Visibility.Visible || Wave.ActualWidth <= 0) return false;
+        var q = VideoArea.TranslatePoint(p, Wave);
+        if (q.X < -4 || q.X > Wave.ActualWidth + 4 || q.Y < -10 || q.Y > Wave.ActualHeight + 10) return false;
+        fraction = Math.Clamp(q.X / Wave.ActualWidth, 0, 1);
+        return true;
+    }
+
+    /// <summary>Where in the song a point is, also outside the waveform (while dragging).</summary>
+    public double WaveformFraction(Point p) => Wave.ActualWidth <= 0 ? 0 : Math.Clamp(VideoArea.TranslatePoint(p, Wave).X / Wave.ActualWidth, 0, 1);
+
+    public void WaveformSeek(double fraction, bool final)
+    {
+        if (_mpv == null) return;
+        _waveDragging = !final;
+        double dur = _mpv.Duration > 0 ? _mpv.Duration : Wave.Duration;
+        Wave.Position = fraction * dur;
+        if (final) Wave.Hover = null;
+        SeekFraction(fraction, exact: final);
+        _overlay?.ShowControls();
+    }
+
+    public void WaveformHover(double? fraction) => Wave.Hover = fraction;
 
     private void OnVideoReconfig()
     {
@@ -255,19 +363,12 @@ public partial class PlayerWindow : Window
             _lastOverlayTick = now;
             RefreshOverlay();
         }
-        if (_editMode)
+        if (_isAudio && !_waveDragging)
         {
-            Trim.SetPosition(_mpv.TimePos);
-            TrimPlayIcon.Icon = _mpv.Paused ? "play" : "pause";
-            if (_mpv.Duration > 0 && Trim.Duration <= 0.02) EnterEditModeCore();
-            // preview of a cut: jump over the part that will be removed
-            if (_cutMode && !_mpv.Paused && !_mpv.Seeking && _mpv.TimePos >= _trimStart - 0.03 && _mpv.TimePos < _trimEnd - 0.05
-                && now - _lastSkipTick > 300)
-            {
-                _lastSkipTick = now;
-                _mpv.CommandAsync("seek", F(_trimEnd), "absolute+exact");
-            }
+            Wave.Duration = _mpv.Duration;
+            Wave.Position = _mpv.TimePos;
         }
+        if (_editMode) Editor.OnState();
     }
 
     public void RefreshOverlay()
@@ -288,7 +389,7 @@ public partial class PlayerWindow : Window
     {
         if (_hwnd == IntPtr.Zero) return;
         double scale = WindowHelper.DpiScale(this);
-        double extra = _editMode ? TrimPanel.ActualHeight : 0;
+        double extra = _editMode ? Editor.ActualHeight : 0;
         int wpx = (int)Math.Round(widthDip * scale), hpx = (int)Math.Round((heightDip + extra) * scale);
         var mon = Native.MonitorFromWindow(_hwnd, Native.MONITOR_DEFAULTTONEAREST);
         var info = new Native.MONITORINFOEX { cbSize = Marshal.SizeOf<Native.MONITORINFOEX>() };
@@ -325,6 +426,7 @@ public partial class PlayerWindow : Window
             case Native.WM_WINDOWPOSCHANGED:
             case Native.WM_MOVING:
                 UpdateOverlayBounds();
+                if (_editMode) Editor.OnMoved(); // the banner preview is a window of its own
                 break;
             case Native.WM_SIZING:
                 if (_hasVideo && !_editMode && !_fullscreen) KeepAspect(wParam.ToInt32(), lParam);
@@ -368,13 +470,14 @@ public partial class PlayerWindow : Window
     public void TogglePause(bool flash)
     {
         if (_mpv == null) return;
-        bool wasPaused = _mpv.Paused;
-        if (wasPaused && _mpv.EofReached && !_editMode) _mpv.Command("seek", "0", "absolute");
-        if (_editMode && wasPaused)
+        if (_editMode)
         {
-            double t = _mpv.TimePos;
-            if (t < _trimStart - 0.05 || t >= _trimEnd - 0.05) _mpv.Command("seek", F(_trimStart), "absolute+exact");
+            Editor.TogglePlay();
+            if (flash) _overlay?.Flash(playing: Editor.IsPlaying);
+            return;
         }
+        bool wasPaused = _mpv.Paused;
+        if (wasPaused && _mpv.EofReached) _mpv.Command("seek", "0", "absolute");
         _mpv.Command("cycle", "pause");
         if (flash) _overlay?.Flash(playing: wasPaused);
     }
@@ -437,20 +540,23 @@ public partial class PlayerWindow : Window
     {
         if (_mpv == null) return;
         var m = new NativeMenu();
-        bool canEdit = _path != null && MediaFormats.CanTrim(_path) && !_editMode;
-        m.Add(L.T("Player.Edit"), EnterEditMode, enabled: canEdit);
-        m.Separator();
-        m.Sub(L.T("Player.Speed"), sub =>
+        bool any = false;
+        void Group()
         {
-            foreach (var sp in new[] { 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 })
-            {
-                var v = sp;
-                sub.Add(v.ToString("0.##", CultureInfo.CurrentCulture) + "×", () => _mpv?.SetProperty("speed", F(v)), isChecked: Math.Abs(_mpv.Speed - v) < 0.01);
-            }
-        });
+            if (any) m.Separator();
+            any = true;
+        }
+
+        if (_path != null && MediaFormats.CanTrim(_path))
+        {
+            Group();
+            m.Add(L.T("Player.Edit") + "\tE", EnterEditMode, enabled: !_editMode);
+        }
+
         var tracks = _mpv.Tracks();
         var audio = tracks.Where(t => t.Type == "audio").ToList();
         var subs = tracks.Where(t => t.Type == "sub").ToList();
+        if (audio.Count > 1 || subs.Count > 0) Group();
         if (audio.Count > 1)
             m.Sub(L.T("Player.Audio"), sub =>
             {
@@ -462,11 +568,14 @@ public partial class PlayerWindow : Window
                 sub.Add(L.T("Player.SubsOff"), () => _mpv?.SetProperty("sid", "no"), isChecked: !subs.Any(s => s.Selected));
                 foreach (var t in subs) { var id = t.Id; sub.Add(TrackLabel(t), () => _mpv?.SetProperty("sid", id.ToString(CultureInfo.InvariantCulture)), isChecked: t.Selected); }
             });
-        m.Separator();
-        if (_hasVideo) m.Add(L.T("Player.FrameShot"), SaveFrame);
-        m.Add(L.T("Player.OnTop"), () => Topmost = !Topmost, isChecked: Topmost);
-        if (_path != null) m.Add(L.T("Player.Reveal"), () => ShellUtil.Reveal(_path));
-        m.Add(L.T("Player.OpenOther"), () => App.Instance?.OpenMediaDialog());
+
+        if (_hasVideo)
+        {
+            Group();
+            m.Add(L.T("Player.CopyFrame") + "\tCtrl+C", () => _ = GrabFrame(save: false));
+            m.Add(L.T("Player.FrameShot"), () => _ = GrabFrame(save: true));
+        }
+        if (!any) return;
         if (anchor != null) m.ShowFor(anchor, forceDark: true, above: true);
         else
         {
@@ -484,227 +593,111 @@ public partial class PlayerWindow : Window
         return string.Join(" · ", parts);
     }
 
-    private async void SaveFrame()
+    /// <summary>
+    /// The frame on screen, at the video's own resolution: copied to the clipboard, or saved into the screenshot
+    /// folder like a capture (then it also lands in the clipboard when that is switched on).
+    /// </summary>
+    private async Task GrabFrame(bool save)
     {
-        if (_mpv == null) return;
+        if (_mpv == null || !_hasVideo) return;
+        string? temp = null;
         try
         {
-            var dir = _s.ScreenshotFolder;
-            Directory.CreateDirectory(dir);
-            var path = ImageIO.UniquePath(dir, L.F("Capture.FrameName", DateTime.Now), ".png");
+            string path;
+            if (save)
+            {
+                var dir = _s.ScreenshotFolder;
+                Directory.CreateDirectory(dir);
+                path = ImageIO.UniquePath(dir, L.F("Capture.FrameName", DateTime.Now), ".png");
+            }
+            else
+            {
+                var dir = Path.Combine(Path.GetTempPath(), "LinearFrame");
+                Directory.CreateDirectory(dir);
+                path = temp = Path.Combine(dir, $"frame-{Environment.ProcessId}-{Environment.TickCount64}.png");
+            }
             var mpv = _mpv;
             int r = await Task.Run(() => mpv.Command("screenshot-to-file", path, "video"));
-            if (r < 0 || !File.Exists(path)) return;
+            if (r < 0 || !File.Exists(path)) { Log.Warn($"Frame grab failed ({r})"); return; }
             if (_s.PlaySound) Sound.Shutter();
-            var bmp = ImageIO.LoadFull(path);
-            if (bmp != null)
+            var bmp = await Task.Run(() =>
             {
-                if (_s.CopyToClipboard) ImageIO.CopyToClipboard(bmp);
-                App.Instance?.NotifyScreenshotsChanged();
-                var mons = MonitorInfo.All();
-                Native.GetWindowRect(_hwnd, out var wr);
-                var mon = mons.FirstOrDefault(x => x.Contains(wr.Left + wr.Width / 2, wr.Top + wr.Height / 2)) ?? mons[0];
-                CaptureToast.Show(bmp, path, mon);
+                var b = ImageIO.LoadFull(path);
+                b?.Freeze();
+                return b;
+            });
+            if (bmp == null) return;
+            if (!save)
+            {
+                var png = await File.ReadAllBytesAsync(path); // mpv wrote a PNG already - no need to encode it again
+                if (ImageIO.CopyToClipboard(bmp, png)) Hud.Show(L.T("Capture.Copied"), "copy", this);
+                return;
             }
+            if (_s.CopyToClipboard) ImageIO.CopyToClipboard(bmp);
+            App.Instance?.NotifyScreenshotsChanged();
+            var mons = MonitorInfo.All();
+            Native.GetWindowRect(_hwnd, out var wr);
+            var mon = mons.FirstOrDefault(x => x.Contains(wr.Left + wr.Width / 2, wr.Top + wr.Height / 2)) ?? mons[0];
+            CaptureToast.Show(bmp, path, mon);
         }
-        catch (Exception ex) { Log.Error("Frame screenshot failed", ex); }
+        catch (Exception ex) { Log.Error("Frame grab failed", ex); }
+        finally
+        {
+            if (temp != null) { try { File.Delete(temp); } catch { /* temp folder */ } }
+            Memory.TrimSoon(4000);
+        }
     }
 
-    // =============================================================== edit (trim)
+    // =============================================================== edit
 
     public void EnterEditMode()
     {
-        if (_mpv == null || _path == null || _editMode) return;
+        if (_mpv == null || _path == null || _editMode || _overlay == null) return;
         if (!MediaFormats.CanTrim(_path)) { Hud.Show(L.T("Player.CannotEdit"), "info", this); return; }
         if (!Ffmpeg.Available) { Hud.Show(L.T("Player.NoFfmpeg"), "info", this); return; }
+        if ((_mpv.GetDouble("duration") ?? _mpv.Duration) <= 0) { _editWhenLoaded = true; return; } // still opening
+        var clip = ClipProbe.FromPlayer(_mpv, _path);
+        if (_fullscreen) ToggleFullscreen();
         _editMode = true;
         _mpv.SetProperty("pause", "yes");
-        TrimPanel.Visibility = Visibility.Visible;
-        TrimButtons.Visibility = Visibility.Visible;
-        TrimProgress.Visibility = Visibility.Collapsed;
-        Trim.Reset(0.01);
+        _mpv.SetProperty("loop-file", "no");
+        Editor.Visibility = Visibility.Visible;
         UpdateOverlayModes();
 
         // grow the window downwards so the video keeps its size (when there is room)
         Dispatcher.BeginInvoke(new Action(() =>
         {
+            if (!_editMode || _mpv == null || _overlay == null) return;
             _panelGrow = 0;
-            if (!_fullscreen && WindowState == WindowState.Normal)
+            if (WindowState == WindowState.Normal)
             {
                 double scale = WindowHelper.DpiScale(this);
                 Native.GetWindowRect(_hwnd, out var r);
                 var mon = Native.MonitorFromWindow(_hwnd, Native.MONITOR_DEFAULTTONEAREST);
                 var info = new Native.MONITORINFOEX { cbSize = Marshal.SizeOf<Native.MONITORINFOEX>() };
                 Native.GetMonitorInfo(mon, ref info);
-                int grow = (int)Math.Round(TrimPanel.ActualHeight * scale);
+                int grow = (int)Math.Round(Editor.ActualHeight * scale);
                 int room = info.rcWork.Bottom - r.Bottom;
                 int up = Math.Max(0, grow - room);
                 int newTop = Math.Max(info.rcWork.Top, r.Top - up);
                 int newH = Math.Min(info.rcWork.Height, r.Height + grow);
-                Native.SetWindowPos(_hwnd, IntPtr.Zero, r.Left, newTop, r.Width, newH, Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
+                // the editor needs some width for its tools
+                int minW = (int)Math.Round(880 * scale), newW = Math.Min(info.rcWork.Width, Math.Max(r.Width, minW));
+                int newLeft = Math.Clamp(r.Left - (newW - r.Width) / 2, info.rcWork.Left, Math.Max(info.rcWork.Left, info.rcWork.Right - newW));
+                Native.SetWindowPos(_hwnd, IntPtr.Zero, newLeft, newTop, newW, newH, Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
                 _panelGrow = newH - r.Height;
             }
-            EnterEditModeCore();
+            Editor.Begin(this, _mpv, _overlay, clip);
         }), System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
-    private void EnterEditModeCore()
-    {
-        if (_mpv == null || !_editMode) return;
-        double dur = _mpv.Duration;
-        if (dur <= 0) return; // will retry from the next state update
-        Trim.Reset(dur);
-        _trimStart = 0;
-        _trimEnd = dur;
-        Trim.SetPosition(_mpv.TimePos);
-        if (_cutMode) SetCutMode(true);
-        UpdateTrimLabels();
-        GenerateFilmstrip();
-        LoadKeyframes();
-    }
-
-    private async void LoadKeyframes()
-    {
-        _kfCts?.Cancel();
-        _keyframes = null;
-        if (_isAudio || _path == null) return;
-        _kfCts = new CancellationTokenSource();
-        var ct = _kfCts.Token;
-        try
-        {
-            var path = _path;
-            var kf = await Task.Run(() => Ffmpeg.Keyframes(path, ct), ct);
-            if (!ct.IsCancellationRequested && path == _path) _keyframes = kf;
-            Log.Info($"Keyframes: {kf?.Length ?? 0}");
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex) { Log.Error("Keyframe scan failed", ex); }
-    }
-
-    /// <summary>First keyframe at or after t (a lossless cut must resume on a keyframe).</summary>
-    private double SnapToNextKeyframe(double t)
-    {
-        if (_keyframes == null || _keyframes.Length == 0) return t;
-        int i = Array.BinarySearch(_keyframes, t - 0.001);
-        if (i < 0) i = ~i;
-        if (i >= _keyframes.Length) return Trim.Duration;
-        return _keyframes[i] - t > 10 ? t : _keyframes[i];
-    }
-
-    private void Mode_Checked(object sender, RoutedEventArgs e)
-    {
-        if (Trim == null || TrimInfo == null || TrimTimes == null) return; // still loading XAML
-        SetCutMode(ModeCut.IsChecked == true);
-    }
-
-    private void SetCutMode(bool cut)
-    {
-        _cutMode = cut;
-        Trim.CutMode = cut;
-        if (ModeCut.IsChecked != cut) { ModeCut.IsChecked = cut; ModeTrim.IsChecked = !cut; }
-        double dur = Trim.Duration;
-        if (cut && dur > 1 && _trimStart <= 0.001 && _trimEnd >= dur - 0.001)
-        {
-            // start with the middle third selected so it's obvious what disappears
-            _trimStart = Math.Round(dur / 3, 1);
-            _trimEnd = Math.Round(dur * 2 / 3, 1);
-            Trim.SetRange(_trimStart, _trimEnd);
-        }
-        if (_mpv != null)
-        {
-            _mpv.SetProperty("ab-loop-a", cut ? "no" : F(_trimStart));
-            _mpv.SetProperty("ab-loop-b", cut ? "no" : F(_trimEnd));
-        }
-        TrimInfo.Text = L.T("Player.Lossless");
-        TrimInfo.ToolTip = cut ? L.T("Player.CutSnap") : null;
-        UpdateTrimLabels();
-    }
-
-    private async void GenerateFilmstrip()
-    {
-        _thumbCts?.Cancel();
-        _thumbCts = new CancellationTokenSource();
-        var ct = _thumbCts.Token;
-        var path = _path!;
-        double dur = Trim.Duration;
-        try
-        {
-            if (_isAudio)
-            {
-                var wave = await Ffmpeg.Waveform(path, 140, dur, ct);
-                if (!ct.IsCancellationRequested) Trim.SetWaveform(wave);
-                return;
-            }
-            double cellH = Trim.StripHeight, cellW = cellH * _aspect;
-            int n = (int)Math.Clamp(Math.Ceiling(Trim.StripWidth / Math.Max(8, cellW)), 3, 24);
-            int hpx = (int)Math.Round(cellH * WindowHelper.DpiScale(this) * 1.25);
-            Trim.SetThumbnailCount(n);
-            using var gate = new SemaphoreSlim(3);
-            var tasks = Enumerable.Range(0, n).Select(async i =>
-            {
-                await gate.WaitAsync(ct);
-                try
-                {
-                    double t = dur * (i + 0.5) / n;
-                    var bmp = await Ffmpeg.Frame(path, t, Math.Max(32, hpx), ct);
-                    if (bmp != null && !ct.IsCancellationRequested) Dispatcher.Invoke(() => Trim.SetThumbnail(i, bmp));
-                }
-                finally { gate.Release(); }
-            }).ToList();
-            await Task.WhenAll(tasks);
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex) { Log.Error("Filmstrip failed", ex); }
-    }
-
-    private void OnTrimRangeChanged(double start, double end, int which, bool final)
-    {
-        if (_cutMode && final && which == 2)
-        {
-            // resume on a keyframe so the join is clean and still lossless
-            double snapped = SnapToNextKeyframe(end);
-            if (Math.Abs(snapped - end) > 0.0005)
-            {
-                end = snapped;
-                Trim.SetRange(start, end);
-            }
-        }
-        _trimStart = start;
-        _trimEnd = end;
-        UpdateTrimLabels();
-        if (_mpv == null) return;
-        double t = which == 1 ? start : Math.Max(start, end - 0.04);
-        if (_cutMode && which == 2) t = end;
-        _mpv.CommandAsync("seek", F(t), final ? "absolute+exact" : "absolute+keyframes");
-        if (final && !_cutMode)
-        {
-            _mpv.SetProperty("ab-loop-a", F(start));
-            _mpv.SetProperty("ab-loop-b", F(end));
-        }
-    }
-
-    private void UpdateTrimLabels()
-    {
-        if (_cutMode)
-            TrimTimes.Text = L.F("Player.CutInfo", TrimBar.FormatTime(_trimStart, true), TrimBar.FormatTime(_trimEnd, true),
-                TrimBar.FormatTime(Math.Max(0, Trim.Duration - (_trimEnd - _trimStart)), true));
-        else
-            TrimTimes.Text = $"{TrimBar.FormatTime(_trimStart, true)}  –  {TrimBar.FormatTime(_trimEnd, true)}     ·     {TrimBar.FormatTime(_trimEnd - _trimStart, true)}";
-    }
-
-    private void TrimPlay_Click(object sender, RoutedEventArgs e) => TogglePause(flash: false);
-
-    private void TrimCancel_Click(object sender, RoutedEventArgs e) => ExitEditMode();
-
-    private void ExitEditMode()
+    private void ExitEditMode(bool reloadOriginal)
     {
         if (!_editMode) return;
-        _thumbCts?.Cancel();
-        _kfCts?.Cancel();
+        Editor.End(reloadOriginal);
         _editMode = false;
-        TrimPanel.Visibility = Visibility.Collapsed;
-        _mpv?.SetProperty("ab-loop-a", "no");
-        _mpv?.SetProperty("ab-loop-b", "no");
+        Editor.Visibility = Visibility.Collapsed;
+        if (_path != null) _mpv?.SetProperty("loop-file", MediaFormats.IsAnimatedImage(_path) ? "inf" : "no");
         if (_panelGrow > 0 && !_fullscreen && WindowState == WindowState.Normal)
         {
             Native.GetWindowRect(_hwnd, out var r);
@@ -715,88 +708,86 @@ public partial class PlayerWindow : Window
         Dispatcher.BeginInvoke(new Action(UpdateOverlayBounds), System.Windows.Threading.DispatcherPriority.Render);
     }
 
-    private void SaveNew_Click(object sender, RoutedEventArgs e) => _ = SaveTrim(replace: false);
-    private void Replace_Click(object sender, RoutedEventArgs e) => _ = SaveTrim(replace: true);
-
-    private async Task SaveTrim(bool replace)
+    /// <summary>The editor saved (a file to open: the new one, or the replaced original) or was left.</summary>
+    private void OnEditorFinished(string? saved, bool replaced)
     {
-        if (_saving || _path == null || _mpv == null) return;
-        string input = _path;
-        double start = _trimStart, end = _trimEnd;
-        bool cut = _cutMode;
-        double duration = Trim.Duration;
-        if (end - start <= 0.05) return;
-        if (cut && end >= duration - 0.05 && start <= 0.05) return; // would remove everything
-        _saving = true;
-        TrimButtons.Visibility = Visibility.Collapsed;
-        TrimProgress.Visibility = Visibility.Visible;
-        TrimProgressFill.Width = 0;
-        _mpv.SetProperty("pause", "yes");
-        var progress = new Progress<double>(p => TrimProgressFill.Width = 150 * p);
+        ExitEditMode(reloadOriginal: saved == null);
+        if (saved == null) return;
+        Load(saved);
+        Hud.Show(L.T(replaced ? "Player.Replaced" : "Player.Saved"), "check", this);
+    }
 
-        string dir = Path.GetDirectoryName(input)!;
-        string name = Path.GetFileNameWithoutExtension(input);
-        string ext = Path.GetExtension(input);
-        string output = replace
-            ? Path.Combine(dir, $"{name}.lf-tmp{ext}")
-            : ImageIO.UniquePath(dir, $"{name} ({L.T("Player.TrimmedSuffix")})", ext);
+    // ---- the editor's preview frame (another format than the video's own)
 
-        try
+    internal Size VideoAreaSize => new(VideoArea.ActualWidth, VideoArea.ActualHeight);
+
+    /// <summary>
+    /// The finished video's frame inside the player: <paramref name="canvas"/> is the frame (black or blurred around the
+    /// picture), <paramref name="visible"/> the part of it the video covers and <paramref name="video"/> where the whole
+    /// picture is (it may stick out of the frame when zoomed in). mpv renders only into the visible part and
+    /// video-zoom/pan put the picture where it is - all on the GPU, the video plays as smoothly as without a format.
+    /// </summary>
+    internal void SetPreviewFrame(Rect canvas, Rect visible, Rect video, double videoAspect, BitmapSource? blur)
+    {
+        Backdrop.Visibility = Visibility.Visible;
+        Canvas.SetLeft(BackdropFrame, canvas.X);
+        Canvas.SetTop(BackdropFrame, canvas.Y);
+        BackdropFrame.Width = Math.Max(1, canvas.Width);
+        BackdropFrame.Height = Math.Max(1, canvas.Height);
+        if (!ReferenceEquals(BackdropImage.Source, blur)) BackdropImage.Source = blur;
+        BackdropImage.Visibility = BackdropDim.Visibility = blur != null ? Visibility.Visible : Visibility.Collapsed;
+        double radius = Math.Clamp(Math.Max(canvas.Width, canvas.Height) * 0.07, 6, 90);
+        BackdropBlur.Radius = radius;
+        BackdropImage.Margin = new Thickness(-radius);
+        if (_isAudio) return;
+        if (visible.IsEmpty || visible.Width < 2 || visible.Height < 2 || video.Width < 1 || video.Height < 1)
         {
-            var (ok, err) = cut
-                ? await Ffmpeg.CutOut(input, output, start, SnapToNextKeyframe(end), duration, progress, CancellationToken.None, _keyframes)
-                : await Ffmpeg.Trim(input, output, start, end, progress, CancellationToken.None);
-            if (!ok)
-            {
-                MessageBox.Show(this, L.F("Player.TrimFailed", err), "LinearFrame", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
+            _host.Visibility = Visibility.Hidden; // the video is out of the frame
+            return;
+        }
+        _host.Visibility = Visibility.Visible;
+        _host.HorizontalAlignment = HorizontalAlignment.Left;
+        _host.VerticalAlignment = VerticalAlignment.Top;
+        _host.Margin = new Thickness(visible.X, visible.Y, 0, 0);
+        _host.Width = visible.Width;
+        _host.Height = visible.Height;
+        if (_mpv == null) return;
+        // mpv fits the picture into its window first (keepaspect), then scales it by 2^zoom and moves it by pan × size
+        double fitW = visible.Width / visible.Height > videoAspect ? visible.Height * videoAspect : visible.Width;
+        double zoom = Math.Log2(video.Width / Math.Max(1, fitW));
+        double panX = (video.X - visible.X - (visible.Width - video.Width) / 2) / video.Width;
+        double panY = (video.Y - visible.Y - (visible.Height - video.Height) / 2) / video.Height;
+        static string P(double v) => v.ToString("0.######", CultureInfo.InvariantCulture);
+        _mpv.SetProperty("video-zoom", P(zoom));
+        _mpv.SetProperty("video-pan-x", P(panX));
+        _mpv.SetProperty("video-pan-y", P(panY));
+    }
 
-            if (!replace)
-            {
-                ExitEditMode();
-                Load(output);
-                Hud.Show(L.T("Player.Saved"), "check", this);
-                return;
-            }
+    /// <summary>A newer picture for the blurred background while playing (only when one is shown).</summary>
+    internal void SetBackdropImage(BitmapSource? blur)
+    {
+        if (Backdrop.Visibility != Visibility.Visible || blur == null || BackdropImage.Source == null || ReferenceEquals(BackdropImage.Source, blur)) return;
+        BackdropImage.Source = blur;
+    }
 
-            // Replace: release the file, move the original to the Recycle Bin, put the trimmed file in its place.
-            var info = new FileInfo(input);
-            DateTime created = info.CreationTime, modified = info.LastWriteTime;
-            await StopAndRelease();
-            bool recycled = await Task.Run(() => ShellUtil.MoveToRecycleBin(input));
-            if (!recycled)
-            {
-                // could not recycle (locked or no Recycle Bin on this drive) - keep both files, never lose data
-                var keep = ImageIO.UniquePath(dir, $"{name} ({L.T("Player.TrimmedSuffix")})", ext);
-                File.Move(output, keep);
-                ExitEditMode();
-                Load(File.Exists(input) ? input : keep);
-                Hud.Show(L.T("Player.Saved"), "check", this);
-                return;
-            }
-            File.Move(output, input);
-            try { File.SetCreationTime(input, created); File.SetLastWriteTime(input, modified); } catch { /* not important */ }
-            ExitEditMode();
-            Load(input);
-            Hud.Show(L.T("Player.Replaced"), "check", this);
-        }
-        catch (Exception ex)
-        {
-            Log.Error("Save trim failed", ex);
-            MessageBox.Show(this, L.F("Player.TrimFailed", ex.Message), "LinearFrame", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        finally
-        {
-            _saving = false;
-            TrimButtons.Visibility = Visibility.Visible;
-            TrimProgress.Visibility = Visibility.Collapsed;
-            if (replace && File.Exists(output)) { try { File.Delete(output); } catch { /* ignore */ } }
-        }
+    internal void ResetPreviewFrame()
+    {
+        Backdrop.Visibility = Visibility.Collapsed;
+        BackdropImage.Source = null;
+        _host.HorizontalAlignment = HorizontalAlignment.Stretch;
+        _host.VerticalAlignment = VerticalAlignment.Stretch;
+        _host.Margin = new Thickness(0);
+        _host.Width = double.NaN;
+        _host.Height = double.NaN;
+        if (!_isAudio && MessageView.Visibility != Visibility.Visible) _host.Visibility = Visibility.Visible;
+        if (_mpv == null) return;
+        _mpv.SetProperty("video-zoom", "0");
+        _mpv.SetProperty("video-pan-x", "0");
+        _mpv.SetProperty("video-pan-y", "0");
     }
 
     /// <summary>Stops playback so mpv closes the file handle (Windows won't move an open file).</summary>
-    private async Task StopAndRelease()
+    internal async Task StopAndRelease()
     {
         if (_mpv == null) return;
         _mpv.Command("stop");
@@ -813,6 +804,24 @@ public partial class PlayerWindow : Window
         bool ctrl = mods.HasFlag(ModifierKeys.Control), shift = mods.HasFlag(ModifierKeys.Shift);
         bool handled = true;
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (_editMode)
+        {
+            // typing a caption: every key belongs to the text box
+            if (Editor.IsTyping) { base.OnPreviewKeyDown(e); return; }
+            if (Editor.HandleKey(e)) { e.Handled = true; return; }
+            switch (key)
+            {
+                case Key.Up: ChangeVolume(5); break;
+                case Key.Down: ChangeVolume(-5); break;
+                case Key.M: ToggleMute(); break;
+                case Key.C when ctrl: if (_hasVideo) _ = GrabFrame(save: false); break;
+                case Key.W when ctrl: Close(); break;
+                default: handled = false; break;
+            }
+            if (handled) e.Handled = true;
+            else base.OnPreviewKeyDown(e);
+            return;
+        }
         switch (key)
         {
             case Key.Space:
@@ -833,22 +842,11 @@ public partial class PlayerWindow : Window
                 ToggleFullscreen(); break;
             case Key.Escape:
                 if (_fullscreen) ToggleFullscreen();
-                else if (_editMode) ExitEditMode();
                 else handled = false;
                 break;
-            case Key.E when !ctrl: if (_editMode) ExitEditMode(); else EnterEditMode(); break;
-            case Key.X when _editMode: SetCutMode(!_cutMode); break;
-            case Key.I when _editMode:
-                _trimStart = Math.Min(_mpv.TimePos, _trimEnd - 0.1);
-                Trim.SetRange(_trimStart, _trimEnd);
-                OnTrimRangeChanged(_trimStart, _trimEnd, 1, true);
-                break;
-            case Key.O when _editMode && !ctrl:
-                _trimEnd = Math.Max(_mpv.TimePos, _trimStart + 0.1);
-                Trim.SetRange(_trimStart, _trimEnd);
-                OnTrimRangeChanged(_trimStart, _trimEnd, 2, true);
-                break;
+            case Key.E when !ctrl: EnterEditMode(); break;
             case Key.O when ctrl: App.Instance?.OpenMediaDialog(); break;
+            case Key.C when ctrl: if (_hasVideo) _ = GrabFrame(save: false); break;
             case Key.W when ctrl: Close(); break;
             case Key.Home: _mpv.CommandAsync("seek", "0", "absolute"); break;
             default: handled = false; break;

@@ -68,6 +68,7 @@ internal static class Native
     public static readonly IntPtr HWND_TOP = IntPtr.Zero;
     public static readonly IntPtr HWND_TOPMOST = new(-1);
     public static readonly IntPtr HWND_NOTOPMOST = new(-2);
+    public static readonly IntPtr HWND_BOTTOM = new(1);
     public static readonly IntPtr HWND_MESSAGE = new(-3);
     public const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_NOZORDER = 0x0004, SWP_NOREDRAW = 0x0008,
         SWP_NOACTIVATE = 0x0010, SWP_FRAMECHANGED = 0x0020, SWP_SHOWWINDOW = 0x0040, SWP_HIDEWINDOW = 0x0080,

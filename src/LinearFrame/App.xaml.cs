@@ -4,8 +4,10 @@ using System.Windows.Threading;
 using LinearFrame.Capture;
 using LinearFrame.Core;
 using LinearFrame.Editor;
+using LinearFrame.Imaging;
 using LinearFrame.Player;
 using LinearFrame.UI;
+using LinearFrame.Viewer;
 
 namespace LinearFrame;
 
@@ -21,6 +23,7 @@ public partial class App : Application
     private HotkeyManager? _hotkeys;
     private MainWindow? _main;
     private PlayerWindow? _player;
+    private ImageViewerWindow? _viewer;
     private bool _errorShown;
 
     public IntPtr MessageHandle => _msg?.Handle ?? IntPtr.Zero;
@@ -72,7 +75,9 @@ public partial class App : Application
         Settings = AppSettings.Load();
         L.Init(Settings.Language);
         Theme.Init(this);
-        Log.Info($"Start {AppPaths.ExePath} args=[{string.Join(" ", args)}]");
+        RaisePriorityIfLowered();
+        long uptimeS = Environment.TickCount64 / 1000;
+        Log.Info($"Start {AppPaths.ExePath} args=[{string.Join(" ", args)}], Windows up {uptimeS / 60}:{uptimeS % 60:00}");
 
         _msg = new MessageWindow();
         _msg.AddHandler(OnMessage);
@@ -82,12 +87,16 @@ public partial class App : Application
         RegisterHotkeys(showErrors: true);
         StartUpdates(args);
 
-        if (AppPaths.RegistersWithWindows && Settings.RunAtStartup) Autostart.Apply(true);
+        if (AppPaths.RegistersWithWindows && Settings.RunAtStartup) After(TimeSpan.FromSeconds(6), CheckAutostart);
         if (AppPaths.RegistersWithWindows) StartMenuShortcut.Ensure(Settings);
 
-        var warm = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
-        warm.Tick += (_, _) => { warm.Stop(); CaptureSession.Prewarm(Settings); RefreshHd(tidy: true); };
-        warm.Start();
+        // The virtual HD screen is tidied away first (that changes the display set-up), then the capture overlays are
+        // warmed up on every monitor. Right after Windows has started, graphics drivers and screens keep settling for a
+        // few minutes - the warm-up is repeated then, so the first screenshot never waits for that.
+        After(TimeSpan.FromMilliseconds(1200), () => RefreshHd(tidy: true));
+        After(TimeSpan.FromMilliseconds(2500), () => Warmup("start"));
+        if (uptimeS < 10 * 60)
+            foreach (int s in new[] { 30, 90, 240 }) After(TimeSpan.FromSeconds(s), () => Warmup("after Windows start"));
 
         bool trayStart = args.Contains("--tray");
         HandleArgs(args.Where(a => a != "--tray").ToArray(), startup: true, trayStart: trayStart);
@@ -99,8 +108,8 @@ public partial class App : Application
         var files = args.Where(a => !a.StartsWith("--") && File.Exists(a)).ToList();
         if (files.Count > 0)
         {
-            if (MediaFormats.IsImage(files[0]) && !MediaFormats.IsAnimatedImage(files[0])) OpenImageInEditor(files[0]);
-            else OpenMedia(files[0], edit: args.Contains("--trim") || args.Contains("--cut"), cut: args.Contains("--cut"));
+            if (args.Contains("--trim") || args.Contains("--cut")) OpenMedia(files[0], edit: true, cut: args.Contains("--cut"));
+            else OpenAny(files[0]);
             return;
         }
         if (args.Contains("--capture") || args.Contains("--capture-full")) { StartRegionCapture(); return; }
@@ -145,8 +154,97 @@ public partial class App : Application
             var area = Marshal.PtrToStringUni(lParam);
             if (area == "ImmersiveColorSet") Dispatcher.InvokeAsync(Theme.Refresh);
         }
-        if (msg == WM_DISPLAYCHANGE) Dispatcher.InvokeAsync(() => RefreshHd(), DispatcherPriority.Background);
+        if (msg == WM_DISPLAYCHANGE)
+        {
+            Dispatcher.InvokeAsync(() => RefreshHd(), DispatcherPriority.Background);
+            Dispatcher.InvokeAsync(() => WarmupSoon("display change"), DispatcherPriority.Background);
+        }
+        if (msg == WM_POWERBROADCAST && wParam.ToInt64() is PBT_APMRESUMEAUTOMATIC or PBT_APMRESUMESUSPEND
+            && Environment.TickCount64 - _lastResume > 20000) // Windows sends both after waking up
+        {
+            _lastResume = Environment.TickCount64;
+            // back from sleep: drivers and screens come back over a while, like after a restart
+            Dispatcher.InvokeAsync(() =>
+            {
+                After(TimeSpan.FromSeconds(5), () => Warmup("after sleep"));
+                After(TimeSpan.FromSeconds(60), () => Warmup("after sleep"));
+            });
+        }
         return false;
+    }
+
+    private long _lastResume = long.MinValue / 2;
+
+    // ------------------------------------------------------------------ start-up helpers
+
+    private const int WM_POWERBROADCAST = 0x0218, PBT_APMRESUMESUSPEND = 0x0007, PBT_APMRESUMEAUTOMATIC = 0x0012;
+    private DispatcherTimer? _displayWarm;
+    private long _lastWarmup = long.MinValue / 2;
+
+    /// <summary>Runs <paramref name="action"/> once, after <paramref name="delay"/>, on the UI thread.</summary>
+    private static void After(TimeSpan delay, Action action)
+    {
+        var t = new DispatcherTimer { Interval = delay };
+        t.Tick += (_, _) => { t.Stop(); action(); };
+        t.Start();
+    }
+
+    /// <summary>Warms the capture overlays up - unless a capture is on screen or a game/video is full screen (then later).</summary>
+    private void Warmup(string why, int attempt = 0)
+    {
+        if (CaptureSession.Current != null || WindowHelper.FullScreenAppInFront())
+        {
+            if (attempt < 20) After(TimeSpan.FromSeconds(30), () => Warmup(why, attempt + 1));
+            return;
+        }
+        _lastWarmup = Environment.TickCount64;
+        CaptureSession.Prewarm(Settings, why);
+    }
+
+    /// <summary>After a display change (several arrive in a row): one warm-up a few seconds after the last one.</summary>
+    private void WarmupSoon(string why)
+    {
+        if (Environment.TickCount64 - _lastWarmup < 15000 || CaptureSession.Current != null) return; // (an HD capture switches the virtual screen on and off)
+        if (_displayWarm == null)
+        {
+            _displayWarm = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+            _displayWarm.Tick += (_, _) => { _displayWarm.Stop(); Warmup(_displayWarmWhy); };
+        }
+        _displayWarmWhy = why;
+        _displayWarm.Stop();
+        _displayWarm.Start();
+    }
+
+    private string _displayWarmWhy = "";
+
+    /// <summary>A scheduled task starts programs "below normal" unless told otherwise - LinearFrame should never lag behind.</summary>
+    private static void RaisePriorityIfLowered()
+    {
+        try
+        {
+            using var p = System.Diagnostics.Process.GetCurrentProcess();
+            if (p.PriorityClass is System.Diagnostics.ProcessPriorityClass.BelowNormal or System.Diagnostics.ProcessPriorityClass.Idle)
+            {
+                p.PriorityClass = System.Diagnostics.ProcessPriorityClass.Normal;
+                Log.Info("Priority raised to normal");
+            }
+        }
+        catch { /* not allowed - keep going */ }
+    }
+
+    /// <summary>Makes sure LinearFrame starts right at sign-in (a few seconds after start-up, off the UI thread).</summary>
+    private void CheckAutostart()
+    {
+        Task.Run(Autostart.EnsureOnStart).ContinueWith(t =>
+        {
+            if (!t.IsCompletedSuccessfully || t.Result) return;
+            // switched off outside the app (Task Manager / Task Scheduler): the setting follows
+            Dispatcher.InvokeAsync(() =>
+            {
+                Settings.RunAtStartup = false;
+                Settings.Save();
+            });
+        });
     }
 
     // ------------------------------------------------------------------ HD captures
@@ -314,7 +412,11 @@ public partial class App : Application
         if (startupChanged)
         {
             if (!AppPaths.RegistersWithWindows) Log.Info("Dev build / test copy: autostart not touched");
-            else Autostart.Apply(Settings.RunAtStartup);
+            else
+            {
+                bool on = Settings.RunAtStartup;
+                Task.Run(() => Autostart.Apply(on));
+            }
         }
     }
 
@@ -367,7 +469,31 @@ public partial class App : Application
             Filter = MediaFormats.DialogFilter,
             Title = "LinearFrame",
         };
-        if (dlg.ShowDialog() == true) OpenMedia(dlg.FileName);
+        if (dlg.ShowDialog() == true) OpenAny(dlg.FileName);
+    }
+
+    /// <summary>Any file: pictures go to the viewer, everything else (and moving pictures) to the player.</summary>
+    public void OpenAny(string path)
+    {
+        if (MediaFormats.IsImage(path)) OpenImage(path);
+        else OpenMedia(path);
+    }
+
+    /// <summary>A still picture opens in the viewer; a GIF/WebP that moves (or a format Windows can't read) plays in the player.</summary>
+    public void OpenImage(string path)
+    {
+        var info = ImageIO.Probe(path);
+        if (info == null ? MediaFormats.IsAnimatedImage(path) : ImageIO.IsAnimated(path, info))
+        {
+            OpenMedia(path);
+            return;
+        }
+        if (_viewer == null)
+        {
+            _viewer = new ImageViewerWindow();
+            _viewer.Closed += (_, _) => _viewer = null;
+        }
+        _viewer.Open(path, info);
     }
 
     public void OpenImageInEditor(string path)

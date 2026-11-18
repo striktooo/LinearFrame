@@ -5,7 +5,7 @@
 <h1 align="center">LinearFrame</h1>
 
 <p align="center">
-  <b>Zrzuty ekranu, odtwarzacz praktycznie każdego formatu i przycinanie bez utraty jakości — dla Windows.</b><br>
+  <b>Zrzuty ekranu, odtwarzacz praktycznie każdego formatu i szybki edytor wideo — dla Windows.</b><br>
   Lekki, szybki, cichy w zasobniku. Prosty i dopracowany jak macOS.
 </p>
 
@@ -70,17 +70,35 @@ dwa napisy z szarego interfejsu zamieniają się w czysty slajd 4K:
 ![Odtwarzacz](docs/images/player.png)
 
 MP4, MOV/HEVC z iPhone'a, MKV, WebM, AVI, FLV, TS, AV1, VP9… i muzyka — MP3, FLAC, M4A, WAV, OGG, Opus. Dekodowanie na karcie
-graficznej, kontrolki w stylu QuickTime znikające w trakcie oglądania, okno trzymające proporcje filmu, prędkość, ścieżki audio
-i napisy, „zapisz tę klatkę jako zrzut”.
+graficznej, kontrolki w stylu QuickTime znikające w trakcie oglądania, okno trzymające proporcje filmu, ścieżki audio i napisy,
+**kopiowanie albo zapisywanie klatki** z ekranu. Muzyka od razu pokazuje okładkę i **cały utwór jako waveform** — klikasz albo
+przeciągasz po nim, żeby przeskoczyć; okładka, tytuł i waveform rosną razem z oknem.
 
-### ✂️ Przycinanie i wycinanie — bez utraty jakości
-| Przytnij: zostaw zaznaczony fragment | Wytnij fragment: usuń zaznaczenie |
-|---|---|
-| ![Przytnij](docs/images/trim.png) | ![Wytnij](docs/images/cut.png) |
+### 🖼️ Także zdjęcia
+JPG, PNG, HEIC, WebP… otwarte w LinearFrame trafiają do czystej przeglądarki: dopasowane do okna (nigdy rozciągnięte ponad 100 %),
+kółko powiększa tam, gdzie jest kursor, przeciąganiem się rozglądasz, dwuklik pokazuje rzeczywiste piksele. Zdjęcia z telefonu
+stoją jak trzeba, kopia wielkości ekranu pojawia się od razu, a każdy piksel jest dekodowany dopiero przy powiększeniu.
+**← →** przechodzą po folderze, **Edytuj** otwiera edytor adnotacji.
 
-Klikasz **Edytuj**, przeciągasz żółte uchwyty jak w iPhonie i wybierasz **Zapisz jako nowy klip** albo **Zastąp oryginał**
-(oryginał trafia do Kosza). Tryb **Wytnij fragment** usuwa kawałek ze środka i sam skleja resztę. Nic nie jest kodowane od nowa —
-strumienie są kopiowane bit w bit, więc nawet film 4 GB jest gotowy w kilka sekund i wygląda dokładnie jak źródło.
+### ✂️ Edytor wideo — cięcie, napisy, emotki, baner, dowolny format
+![Edytor wideo](docs/images/video-editor.png)
+
+Klikasz ✂️ na pasku sterowania (albo **E**) i pod filmem otwiera się edytor z paskiem klatek i waveformem:
+
+- **Podziel** w miejscu znacznika i **Usuń** kawałki — wytniesz dowolnie wiele fragmentów. **Połącz** dokleja kolejny film na końcu.
+- **Tekst** — napisy czcionką TikToka (TikTok Sans): domyślnie biały z czarnym obrysem, albo z tłem, albo bez niczego;
+  kolory jak w TikToku, dowolny rozmiar; przeciągasz je po filmie (same łapią środek), dwuklik = edycja tekstu.
+- **Emotki** — prawdziwa galeria emotek z iPhone'a (grafiki Apple pobierane raz, przy pierwszym otwarciu).
+- **Baner** — wstawia Twój baner (film z przezroczystością, np. ProRes 4444 .mov) w miejscu znacznika: film gra jeszcze 0,7 s,
+  potem stoi, póki baner leci, i rusza 0,4 s przed końcem banera. Przesuwasz go po filmie albo na osi czasu, zmieniasz rozmiar,
+  **Góra / Środek / Dół**. Prawy klik na przycisku = inny plik banera.
+- **Format** — 9:16, 1:1, 4:5, 16:9 albo oryginał; dopasuj albo wypełnij, powiększ i przesuń film w kadrze, tło rozmyte albo
+  czarne, rozdzielczość.
+
+Podgląd gra na żywo w odtwarzaczu (kadr robi karta graficzna, baner leci we własnej warstwie), wszystko z cofaniem i ponawianiem.
+**Zapisz jako nowy klip** albo **Zastąp oryginał** (oryginał trafia do Kosza): samo cięcie jednego pliku jest kopiowane bit w bit
+— bez utraty jakości, w kilka sekund nawet dla 4 GB; wszystko inne jest raz renderowane do MP4 (H.264), na karcie graficznej,
+jeśli jest (NVIDIA, AMD, Intel), co do klatki, z dźwiękiem banera.
 
 ### 📚 Biblioteka, ustawienia i ciche aktualizacje
 | | |
@@ -101,8 +119,9 @@ jest pobierany ponownie tylko wtedy, gdy naprawdę się zmienił.
 3. Jeśli pojawi się „System Windows ochronił ten komputer” (aplikacja nie ma jeszcze certyfikatu podpisu):
    **Więcej informacji → Uruchom mimo to**.
 
-Aplikacja startuje razem z Windows (wyłączysz w Ustawieniach). Żeby otwierała filmy domyślnie: *Odtwarzacz → Otwieraj wideo
-i muzykę w LinearFrame*; pliki wideo dostają też pozycję **Przytnij w LinearFrame** w klasycznym menu kontekstowym.
+Aplikacja startuje od razu po zalogowaniu do Windows — przez małe zadanie użytkownika w Harmonogramie zadań, bez uprawnień
+administratora (programy z klasycznej listy „Uruchom” Windows wstrzymuje o 20–30 s); wyłączysz to w Ustawieniach. Żeby otwierała filmy, muzykę albo zdjęcia domyślnie: *Odtwarzacz →
+Otwieraj wideo, muzykę i zdjęcia w LinearFrame*; pliki wideo dostają też pozycję **Przytnij w LinearFrame** w klasycznym menu kontekstowym.
 
 ## Skróty
 
@@ -111,7 +130,9 @@ i muzykę w LinearFrame*; pliki wideo dostają też pozycję **Przytnij w Linear
 | Wszędzie | **Ctrl+Shift+4** zrzut (albo Twój klawisz / przycisk myszy) |
 | Przy zaznaczaniu | **Ctrl+C / Enter** kopiuj i zapisz · **E** edytuj · **Ctrl+S** zapisz jako · **Esc** anuluj · **strzałki** przesuń · prawy klik czyści |
 | Edytor | **V P H A L R O T N B** narzędzia · **C** kadruj i rozszerz · **Ctrl+Z / Ctrl+Shift+Z** · **Ctrl+C** kopiuj · **Ctrl+S** gotowe |
-| Odtwarzacz | **Spacja** pauza · **← →** 5 s · **J L** 10 s · **, .** klatka · **↑ ↓** głośność · **M** wycisz · **F** pełny ekran · **E** edycja · **X** przytnij/wytnij · **I O** początek/koniec |
+| Odtwarzacz | **Spacja** pauza · **← →** 5 s · **J L** 10 s · **, .** klatka · **↑ ↓** głośność · **M** wycisz · **F** pełny ekran · **Ctrl+C** kopiuj klatkę · **E** edytor wideo |
+| Edytor wideo | **Spacja** odtwórz · **← →** klatka (**Shift** 1 s) · **S** podziel · **Delete** usuń · **T** tekst · **Ctrl+Z / Ctrl+Y** · **Esc** gotowe / wyjdź |
+| Zdjęcia | **← →** poprzednie / następne · **kółko** powiększenie · **dwuklik**, **0 / 1** cały obraz / rzeczywiste piksele · **Ctrl+C** kopiuj · **E** edytuj · **Esc** zamknij |
 
 Wiersz poleceń: `LinearFrame.exe film.mp4` · `--trim film.mp4` · `--cut film.mp4` · `--capture` · `--settings` · `--exit`
 
@@ -120,7 +141,7 @@ Wiersz poleceń: `LinearFrame.exe film.mp4` · `--trim film.mp4` · `--cut film.
 ## Jak to działa od środka
 
 Jedna aplikacja C# / .NET 10 WPF z ręcznie zrobionym motywem w stylu macOS (jasny i ciemny), rozmawiająca bezpośrednio z Win32,
-plus dwa sprawdzone silniki obok pliku exe: **mpv** do odtwarzania i **FFmpeg** do bezstratnej edycji.
+plus dwa sprawdzone silniki obok pliku exe: **mpv** do odtwarzania i **FFmpeg** do edycji.
 
 ```mermaid
 flowchart LR
@@ -134,7 +155,7 @@ flowchart LR
     subgraph Odtwarzacz
       F["plik"] --> MPV["libmpv · D3D11 · GPU<br/>natywne okno potomne"]
       UI["przezroczysta nakładka WPF<br/>(cała obsługa myszy)"] -.-> MPV
-      ED2["Przytnij / Wytnij"] --> FF["ffmpeg -c copy<br/>klatki kluczowe, bez kodowania"]
+      ED2["Edytor wideo<br/>podgląd EDL w mpv"] --> FF["ffmpeg: cięcia kopiowane bit w bit,<br/>reszta jednym grafem · NVENC/AMF/QSV"]
     end
 ```
 
@@ -146,8 +167,10 @@ flowchart LR
   i połyka wyłącznie to jedno kliknięcie.
 - Najpierw zrzucany jest monitor pod kursorem (GDI `BitBlt` skomponowanego pulpitu, ok. 30 ms dla 1080p) i od razu pokazuje się
   jego nakładka; pozostałe monitory dochodzą chwilę później. Okna nakładki powstają jako „ukryte w DWM” (cloak) i odsłaniają się
-  dopiero po namalowaniu pierwszej klatki — bez mignięcia. Po starcie aplikacja raz „rozgrzewa” niewidoczną nakładkę poza ekranem,
-  więc już pierwszy zrzut jest tak szybki jak kolejne.
+  dopiero po namalowaniu pierwszej klatki — bez mignięcia. Po starcie w rogu każdego monitora rysuje się malutka, ukryta
+  i przezroczysta dla myszy nakładka, więc WPF ma gotowe urządzenie Direct3D dla każdego ekranu, zanim naciśniesz skrót. Tuż po
+  starcie Windows samo to przygotowanie potrafi trwać kilka sekund, dlatego „rozgrzewka” powtarza się kilka razy w pierwszych
+  minutach po uruchomieniu systemu i po wybudzeniu — już pierwszy zrzut jest tak szybki jak kolejne.
 - Klikanie okien: `EnumWindows` + `DWMWA_EXTENDED_FRAME_BOUNDS` (prawdziwe granice bez niewidzialnej ramki), z pominięciem okien
   ukrytych, przezroczystych dla myszy i nakładek typu overlay.
 - Wszystko w fizycznych pikselach; WPF działa w trybie Per-Monitor-V2 DPI.
@@ -195,13 +218,24 @@ flowchart LR
 </details>
 
 <details>
-<summary><b>Bezstratne przycinanie i wycinanie</b></summary>
+<summary><b>Edytor wideo</b></summary>
 
-- **Przytnij** = `ffmpeg -ss <start> -i plik -t <długość> -c copy`. MP4/MOV zaczynają się co do klatki dzięki liście edycji (edit list),
-  inne kontenery od poprzedniej klatki kluczowej.
-- **Wytnij fragment** wymaga czystego sklejenia: lista klatek kluczowych jest czytana z kontenera bez dekodowania
-  (`-c copy -f framecrc`), koniec wycięcia dociąga się do najbliższej klatki kluczowej, obie połówki są kopiowane do plików
-  tymczasowych (każda z czystymi znacznikami czasu) i łączone demultiplekserem concat. Autotest dekoduje każdy wynik.
+- Trzy osie czasu: klipy sklejone jeden za drugim (tu są zakotwiczone napisy i banery, więc zostają przy „swoim” momencie, gdy
+  coś przed nimi wytniesz), zostawione kawałki (to mpv gra jako jedna oś EDL) i gotowy film (plus pauzy banerów). Pauza to mpv
+  zatrzymujący się sam na dokładnej klatce (sprawdzane w wątku zdarzeń mpv), a w tym czasie biegnie zegar.
+- Podgląd formatu: mpv rysuje tylko w tej części kadru, którą zajmuje film, a `video-zoom`/`video-pan` stawiają obraz tam,
+  gdzie jest — robi to karta graficzna, więc odtwarzanie jest tak samo płynne jak bez formatu. Rozmyte tło to warstwa WPF pod spodem.
+- Podgląd banera to przezroczyste dla myszy okno warstwowe, do którego trafiają klatki dekodowane przez FFmpeg na bieżąco,
+  dokładnie w pokazywanym rozmiarze, do krótkiej kolejki (kilka klatek, niezależnie od wielkości okna).
+- **Kopia** (samo cięcie jednego pliku): jeden kawałek = `ffmpeg -ss -t -c copy` (MP4/MOV zaczynają się co do klatki dzięki
+  liście edycji); kilka kawałków = demultiplekser concat czytający punkty wejścia/wyjścia z pliku (każdy kolejny kawałek zaczyna
+  się od klatki kluczowej, znalezionej bez dekodowania przez `-c copy -f framecrc`). Przy klatkach B takie łączenia nie są
+  dokładne co do klatki, więc wtedy film jest renderowany.
+- **Render**: jeden graf filtrów FFmpeg — każdy klip dekodowany raz, cięcia co do klatki, każda pauza czytana przez osobne
+  wejście i trzymana `tpad`, każdy kawałek wpasowany w kadr (scale/crop/pad albo rozmyta kopia), baner przycięty do obszaru,
+  w którym naprawdę jest na swoim płótnie (znalezionego raz przez `alphaextract,bbox`), napisy i emotki jako obrazki z tego
+  samego kodu rysującego co podgląd, dźwięk sklejony z ciszą w pauzach i zmiksowany z dźwiękiem banera.
+  Koder: NVENC → AMF → QSV → x264.
 - *Zastąp oryginał* zatrzymuje odtwarzanie, przenosi oryginał do Kosza i przywraca daty pliku.
 </details>
 

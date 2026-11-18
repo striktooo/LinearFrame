@@ -95,6 +95,128 @@ public sealed class ThinSlider : FrameworkElement
 }
 
 /// <summary>
+/// The whole recording as a waveform (like Voice Memos): what has played is bright, the rest dim, the bars under the
+/// mouse light up up to the cursor. Clicks and drags reach it through the player's overlay, which lies on top of it.
+/// The bars always fill the width, so a bigger window simply shows a bigger, finer waveform.
+/// </summary>
+public sealed class WaveformView : FrameworkElement
+{
+    private const double Bar = 3, Gap = 2;
+    private static readonly Brush Played = Freeze(new SolidColorBrush(Color.FromArgb(0xF2, 255, 255, 255)));
+    private static readonly Brush PlayedAhead = Freeze(new SolidColorBrush(Color.FromArgb(0xA6, 255, 255, 255)));
+    private static readonly Brush HoverBrush = Freeze(new SolidColorBrush(Color.FromArgb(0x80, 255, 255, 255)));
+    private static readonly Brush Rest = Freeze(new SolidColorBrush(Color.FromArgb(0x47, 255, 255, 255)));
+    private static readonly Brush LabelBg = Freeze(new SolidColorBrush(Color.FromArgb(0xE0, 0x1F, 0x1F, 0x22)));
+    private static readonly Typeface Face = new(new FontFamily("Segoe UI Variable Text, Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
+
+    public static readonly DependencyProperty RevealProperty = DependencyProperty.Register(
+        nameof(Reveal), typeof(double), typeof(WaveformView), new FrameworkPropertyMetadata(1.0, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    /// <summary>0..1 - the bars grow out of the middle line when the waveform arrives.</summary>
+    public double Reveal { get => (double)GetValue(RevealProperty); set => SetValue(RevealProperty, value); }
+
+    private float[]? _peaks;
+    private float[]? _bars;      // peaks folded to the current number of bars
+    private double _position, _duration;
+    private double? _hover;
+
+    public float[]? Peaks => _peaks;
+
+    public double Duration
+    {
+        get => _duration;
+        set { if (Math.Abs(value - _duration) < 1e-6) return; _duration = value; InvalidateVisual(); }
+    }
+
+    public double Position
+    {
+        get => _position;
+        set { if (Math.Abs(value - _position) < 1e-4) return; _position = value; InvalidateVisual(); }
+    }
+
+    /// <summary>Where the mouse is (0..1), or null.</summary>
+    public double? Hover
+    {
+        get => _hover;
+        set { if (value == _hover) return; _hover = value; InvalidateVisual(); }
+    }
+
+    public WaveformView()
+    {
+        Focusable = false;
+        IsHitTestVisible = false; // the overlay above takes the mouse
+        SnapsToDevicePixels = true;
+    }
+
+    public void SetPeaks(float[]? peaks)
+    {
+        _peaks = peaks;
+        _bars = null;
+        if (peaks != null)
+            BeginAnimation(RevealProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(420))
+            { EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut } });
+        InvalidateVisual();
+    }
+
+    /// <summary>Folds the peak envelope into <paramref name="n"/> values (each the loudest of its slice).</summary>
+    public static float[] Fold(float[] peaks, int n)
+    {
+        var r = new float[Math.Max(1, n)];
+        for (int i = 0; i < r.Length; i++)
+        {
+            int a = (int)((long)peaks.Length * i / r.Length), b = (int)((long)peaks.Length * (i + 1) / r.Length);
+            float m = 0;
+            for (int j = a; j < Math.Max(a + 1, b) && j < peaks.Length; j++) m = Math.Max(m, peaks[j]);
+            r[i] = m;
+        }
+        return r;
+    }
+
+    protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
+    {
+        base.OnRenderSizeChanged(sizeInfo);
+        _bars = null;
+    }
+
+    protected override void OnRender(DrawingContext dc)
+    {
+        double w = ActualWidth, h = ActualHeight;
+        if (w < 8 || h < 4) return;
+        double dpi = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        int n = Math.Max(1, (int)((w + Gap) / (Bar + Gap)));
+        if (_peaks != null && (_bars == null || _bars.Length != n)) _bars = Fold(_peaks, n);
+        double step = (w + Gap) / n;
+        double played = _duration > 0 ? Math.Clamp(_position / _duration, 0, 1) : 0;
+        double hover = _hover ?? -1;
+        double reveal = Reveal;
+        double mid = h / 2;
+        double barPx = Math.Max(1, Math.Round(Bar * dpi)) / dpi; // whole screen pixels: crisp bars
+        for (int i = 0; i < n; i++)
+        {
+            double x = Math.Round(i * step * dpi) / dpi;
+            double c = (x + barPx / 2) / w; // where this bar sits, 0..1
+            double v = _bars != null ? _bars[i] * reveal : 0;
+            double bh = Math.Max(3, Math.Round(v * (h - 2) * dpi) / dpi);
+            Brush b = c <= played ? (hover >= 0 && c > hover ? PlayedAhead : Played) : (hover >= 0 && c <= hover ? HoverBrush : Rest);
+            dc.DrawRoundedRectangle(b, null, new Rect(x, Math.Round((mid - bh / 2) * dpi) / dpi, barPx, bh), barPx / 2, barPx / 2);
+        }
+
+        if (_hover is double hv && _duration > 0)
+        {
+            // the time under the cursor, in a small pill on the waveform
+            var ft = new FormattedText(TrimBar.FormatTime(hv * _duration), CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, Face, 11.5, Brushes.White, dpi);
+            double pw = ft.Width + 14, ph = ft.Height + 4;
+            double px = Math.Clamp(hv * w - pw / 2, 0, Math.Max(0, w - pw));
+            double py = Math.Max(0, mid - (_bars != null && _bars.Length > 0 ? _bars[Math.Clamp((int)(hv * n), 0, n - 1)] * reveal * (h - 2) / 2 : 0) - ph - 6);
+            dc.DrawRoundedRectangle(LabelBg, null, new Rect(px, py, pw, ph), ph / 2, ph / 2);
+            dc.DrawText(ft, new Point(px + 7, py + 2));
+        }
+    }
+
+    private static T Freeze<T>(T f) where T : Freezable { f.Freeze(); return f; }
+}
+
+/// <summary>
 /// iPhone-style trim bar: filmstrip (or waveform), yellow frame with grab handles, white playhead.
 /// </summary>
 public sealed class TrimBar : FrameworkElement

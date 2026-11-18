@@ -5,7 +5,7 @@
 <h1 align="center">LinearFrame</h1>
 
 <p align="center">
-  <b>Screenshots, a player for practically every format, and lossless trimming — for Windows.</b><br>
+  <b>Screenshots, a player for practically every format, and a quick video editor — for Windows.</b><br>
   Light, fast and quiet in the tray, with the polish and simplicity of macOS.
 </p>
 
@@ -70,17 +70,35 @@ so two labels from a grey interface become a clean 4K slide:
 ![Player](docs/images/player.png)
 
 MP4, MOV/HEVC from an iPhone, MKV, WebM, AVI, FLV, TS, AV1, VP9… and audio — MP3, FLAC, M4A, WAV, OGG, Opus. Hardware decoding,
-QuickTime-style controls that disappear while you watch, a window that keeps the video's aspect ratio, speed control,
-audio/subtitle tracks and "save this frame as a screenshot".
+QuickTime-style controls that disappear while you watch, a window that keeps the video's aspect ratio, audio/subtitle tracks,
+and **copy or save the frame on screen**. Music shows its cover and the **whole song as a waveform** the moment it opens — click or
+drag on it to jump around; cover, title and waveform grow with the window.
 
-### ✂️ Trim and cut — without losing quality
-| Trim: keep the selected part | Cut out: remove the selected part |
-|---|---|
-| ![Trim](docs/images/trim.png) | ![Cut](docs/images/cut.png) |
+### 🖼️ Pictures, too
+Open a JPG, PNG, HEIC, WebP… with LinearFrame and it lands in a clean viewer: fitted to the window (never stretched past 100 %),
+the wheel zooms where the cursor is, drag to look around, double-click for actual pixels. Phone photos stand the right way up,
+a screen-sized copy appears instantly and every pixel is decoded only when you zoom in. **← →** walk through the folder,
+**Edit** opens the markup editor.
 
-Click **Edit**, drag the yellow handles like on an iPhone, then **Save as new clip** or **Replace original** (the original goes to
-the Recycle Bin). Switch to **Cut out** to remove a fragment from the middle — the rest is joined automatically.
-Nothing is re-encoded: streams are copied bit for bit, so a 4 GB video is done in seconds and looks exactly like the source.
+### ✂️ Video editor — cuts, captions, emoji, a banner, any format
+![Video editor](docs/images/video-editor.png)
+
+Click ✂️ in the controls (or press **E**) and the editor opens under the video, with the film strip and the waveform:
+
+- **Split** at the playhead and **Delete** pieces — cut out as many fragments as you like. **Join** adds another video after this one.
+- **Text** — captions in TikTok's own font (TikTok Sans): white with a black outline by default, a background plate, or plain;
+  TikTok's colours, any size; drag them anywhere on the video (they snap to the middle), double-click to retype.
+- **Emoji** — the real iPhone emoji gallery (Apple's artwork, downloaded once the first time you open it).
+- **Banner** — puts your brand banner (a video with transparency, e.g. a ProRes 4444 .mov) at the playhead: the video keeps
+  playing for 0.7 s, freezes while the banner plays and moves again 0.4 s before the banner ends. Move it on the video or on the
+  timeline, resize it, **Top / Middle / Bottom**. Right-click the button to pick another banner file.
+- **Format** — 9:16, 1:1, 4:5, 16:9 or the original; fit or fill, zoom and drag the video inside the frame, blurred or black
+  background, resolution.
+
+The preview plays live in the player (the GPU frames the video, the banner runs in a layer of its own), with undo/redo for
+everything. **Save as new clip** or **Replace original** (the original goes to the Recycle Bin): cuts of one file are copied
+bit for bit — no quality loss, seconds even for 4 GB; everything else is rendered once to MP4 (H.264), on the graphics card when
+there is one (NVIDIA, AMD, Intel), frame-exact, with the banner's sound mixed in.
 
 ### 📚 Library, settings and quiet automatic updates
 | | |
@@ -99,7 +117,8 @@ An update only downloads the app itself (about 55 MB); the video engine is fetch
 2. Unzip it anywhere and run **`LinearFrame.exe`**. Nothing to install, .NET is built in.
 3. SmartScreen may say *"Windows protected your PC"* (the app isn't code-signed yet): **More info → Run anyway**.
 
-It starts with Windows (switch it off in Settings). To open videos with it by default: *Player → Use LinearFrame for videos and music*;
+It starts the moment you sign in to Windows — through a small task of your own in Task Scheduler, no admin rights (programs in
+the classic "Run" list are held back by Windows for 20–30 s); switch it off in Settings. To open videos, music or pictures with it by default: *Player → Use LinearFrame for videos, music and pictures*;
 video files also get **Trim with LinearFrame** in the classic context menu.
 
 ## Keyboard
@@ -109,7 +128,9 @@ video files also get **Trim with LinearFrame** in the classic context menu.
 | Anywhere | **Ctrl+Shift+4** capture (or your own key / mouse button) |
 | While selecting | **Ctrl+C / Enter** copy & save · **E** edit · **Ctrl+S** save as · **Esc** cancel · **arrows** nudge · right-click clears |
 | Editor | **V P H A L R O T N B** tools · **C** crop & extend · **Ctrl+Z / Ctrl+Shift+Z** · **Ctrl+C** copy · **Ctrl+S** done |
-| Player | **Space** pause · **← →** 5 s · **J L** 10 s · **, .** frame step · **↑ ↓** volume · **M** mute · **F** full screen · **E** edit · **X** trim/cut · **I O** set in/out |
+| Player | **Space** pause · **← →** 5 s · **J L** 10 s · **, .** frame step · **↑ ↓** volume · **M** mute · **F** full screen · **Ctrl+C** copy frame · **E** video editor |
+| Video editor | **Space** play · **← →** one frame (**Shift** 1 s) · **S** split · **Delete** delete · **T** text · **Ctrl+Z / Ctrl+Y** · **Esc** done / leave |
+| Pictures | **← →** previous / next · **wheel** zoom · **double-click**, **0 / 1** whole picture / actual pixels · **Ctrl+C** copy · **E** edit · **Esc** close |
 
 Command line: `LinearFrame.exe video.mp4` · `--trim video.mp4` · `--cut video.mp4` · `--capture` · `--settings` · `--exit`
 
@@ -118,7 +139,7 @@ Command line: `LinearFrame.exe video.mp4` · `--trim video.mp4` · `--cut video.
 ## Under the hood
 
 LinearFrame is a single C# / .NET 10 WPF app with a hand-made macOS-style theme (light & dark), talking directly to Win32,
-plus two battle-tested engines shipped next to the exe: **mpv** for playback and **FFmpeg** for lossless editing.
+plus two battle-tested engines shipped next to the exe: **mpv** for playback and **FFmpeg** for editing.
 
 ```mermaid
 flowchart LR
@@ -132,7 +153,7 @@ flowchart LR
     subgraph Player
       F["file"] --> MPV["libmpv · D3D11 · hwdec<br/>native child window"]
       UI["transparent WPF overlay<br/>(all input, auto-hide)"] -.-> MPV
-      ED2["Trim / Cut"] --> FF["ffmpeg -c copy<br/>keyframe-aware, no re-encode"]
+      ED2["Video editor<br/>EDL preview in mpv"] --> FF["ffmpeg: cuts copied bit for bit,<br/>the rest one filter graph · NVENC/AMF/QSV"]
     end
 ```
 
@@ -143,8 +164,10 @@ flowchart LR
   only while a mouse button is bound, runs on its own thread (the mouse never waits for the UI) and swallows just that click.
 - The monitor under the cursor is captured first (GDI `BitBlt` of the DWM-composed desktop, ~30 ms for 1080p) and its overlay
   is shown immediately; the other monitors follow a moment later. Overlay windows are created **DWM-cloaked** and revealed only
-  after their first frame is painted, so there's no flash. A hidden off-screen overlay is rendered once at start-up to warm up
-  code, styles and the render pipeline — the very first capture is as fast as every later one.
+  after their first frame is painted, so there's no flash. After start-up a tiny cloaked, click-through overlay is drawn in a
+  corner of every monitor, so WPF has its Direct3D device for each screen ready before you press the shortcut. Right after
+  Windows starts that set-up alone can take several seconds, so the warm-up is repeated a few times in the first minutes after
+  boot and after waking from sleep — the very first capture is as fast as every later one.
 - Click-a-window uses `EnumWindows` + `DWMWA_EXTENDED_FRAME_BOUNDS` (real bounds without the invisible resize border),
   skipping cloaked, click-through and fully transparent overlay windows.
 - Everything is in physical pixels; WPF runs Per-Monitor-V2 DPI aware.
@@ -191,13 +214,22 @@ flowchart LR
 </details>
 
 <details>
-<summary><b>Lossless trim & cut</b></summary>
+<summary><b>Video editor</b></summary>
 
-- **Trim** = `ffmpeg -ss <start> -i in -t <len> -c copy`. MP4/MOV keep a frame-accurate start thanks to an edit list;
-  other containers start on the previous keyframe.
-- **Cut out** needs a clean join: the keyframe list is read from the container without decoding (`-c copy -f framecrc`),
-  the end of the cut snaps to the next keyframe, both halves are stream-copied into temporary files (each with clean
-  timestamps, B-frame tails included) and joined with the concat demuxer. Every result is verified by decoding in the self-test.
+- Three time lines: the clips joined end to end (captions and banners are anchored here, so they stay with "their" moment when
+  something before them is cut), the kept pieces (what mpv plays as one EDL timeline) and the finished video (plus the banner
+  freezes). A freeze is mpv pausing itself on the exact frame (checked on mpv's event thread) while a clock runs.
+- Format preview: mpv renders only into the part of the frame the video covers and `video-zoom`/`video-pan` put the picture where
+  it is - the GPU does it, playback stays as smooth as without a format. The blurred background is a WPF layer behind it.
+- The banner preview is a click-through layered window fed with premultiplied frames that FFmpeg decodes on the fly, at exactly
+  the size shown, into a short queue (a handful of frames, however big the window).
+- **Copy** (only cuts of one file): one piece = `ffmpeg -ss -t -c copy` (MP4/MOV keep a frame-accurate start thanks to an edit
+  list); several pieces = the concat demuxer reading the file's in/out points (every later piece starts on a keyframe, found
+  without decoding via `-c copy -f framecrc`). With B-frames such joins aren't frame-exact, so those are rendered instead.
+- **Render**: one FFmpeg filter graph - every clip decoded once, frame-exact trims, each freeze read through its own input and
+  held with `tpad`, every piece framed onto the canvas (scale/crop/pad or a blurred copy), the banner cropped to the box where it
+  really is on its canvas (found once with `alphaextract,bbox`), captions and emoji as pictures from the same drawing code as the
+  preview, sound concatenated with silence in freezes and the banner's sound mixed in. Encoder: NVENC → AMF → QSV → x264.
 - *Replace original* stops playback, moves the original to the Recycle Bin and restores the file's dates.
 </details>
 
@@ -244,7 +276,8 @@ dotnet run --project src/LinearFrame   # run it
 pwsh ./build.ps1                       # dist/LinearFrame-<version>-win-x64.zip
 ```
 
-Self-test (no UI, ~1 min — capture, resampling, markup, crop & extend, trim/cut of MP4/MKV/MP3 with decode checks, libmpv):
+Self-test (~1 min — capture, resampling, markup, crop & extend, trim/cut of MP4/MKV/MP3 with decode checks, libmpv, the video
+editor's time lines, lossless joins and a full render with a banner freeze; it opens a few windows and injects test key presses):
 
 ```powershell
 src\LinearFrame\bin\Debug\net10.0-windows\LinearFrame.exe --selftest $env:TEMP\lf-test
@@ -259,7 +292,8 @@ src/LinearFrame/
   Capture/   screen capture, window detection, selection overlay, floating thumbnail
   Editor/    markup document, tools, crop & extend, exporter (Full HD … 8K)
   Imaging/   pixel buffers, Lanczos resize, background detection, PNG/JPG, clipboard
-  Player/    libmpv interop, player window + overlay, trim/cut bar, ffmpeg helpers
+  Player/    libmpv interop, player window + overlay, ffmpeg helpers
+    Edit/    video editor: edit model, timeline, captions, Apple emoji, banner preview, export
   UI/        main window (library / player / settings), icons, controls
   Dev/       self-test and the generator of these README images
 ```

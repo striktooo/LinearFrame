@@ -129,6 +129,10 @@ public sealed class AppSettings
     public double PlayerVolume { get; set; } = 100;
     public bool PlayerMuted { get; set; }
     public List<string> RecentMedia { get; set; } = new();
+    /// <summary>Emoji picked lately in the video editor (newest first).</summary>
+    public List<string> RecentEmoji { get; set; } = new();
+    /// <summary>The banner file the editor's "Banner" button adds.</summary>
+    public string? BannerPath { get; set; }
 
     [JsonIgnore] public string ScreenshotFolder => string.IsNullOrWhiteSpace(SaveFolder) ? AppPaths.DefaultScreenshotDir : SaveFolder!;
 
@@ -151,6 +155,7 @@ public sealed class AppSettings
                     s.RegionHotkey ??= new(ModifierKeys.Control | ModifierKeys.Shift, Key.D4);
                     s.RegionHotkey2 ??= new();
                     s.RecentMedia ??= new();
+                    s.RecentEmoji ??= new();
                     return s;
                 }
             }
