@@ -12,7 +12,10 @@ using LinearFrame.Core;
 
 namespace LinearFrame.UI;
 
-/// <summary>Common window plumbing: maximize to the work area, Windows 11 rounded corners, theme-aware frame.</summary>
+/// <summary>
+/// Common window plumbing: maximize to the work area (nothing cut off by the screen), the resize edges everywhere - over
+/// the window buttons in the corner too - Windows 11 rounded corners, theme-aware frame.
+/// </summary>
 public static class WindowHelper
 {
     public static void Attach(Window w, bool? forceDark = null)
@@ -21,6 +24,7 @@ public static class WindowHelper
         {
             var hwnd = new WindowInteropHelper(w).Handle;
             Theme.ApplyFrame(hwnd, forceDark ?? Theme.IsDark);
+            if (AppPaths.Ghost) Native.SetCloak(hwnd, true);
             HwndSource.FromHwnd(hwnd)?.AddHook((IntPtr h, int msg, IntPtr wp, IntPtr lp, ref bool handled) =>
             {
                 if (msg == Native.WM_GETMINMAXINFO)
@@ -28,15 +32,71 @@ public static class WindowHelper
                     FixMaximize(w, h, lp);
                     handled = true;
                 }
+                else if (msg == Native.WM_NCHITTEST && EdgeAt(w, h, lp) is int edge and > 0)
+                {
+                    // ahead of WindowChrome: there the window buttons would win over the top-right corner and edge
+                    handled = true;
+                    return new IntPtr(edge);
+                }
                 return IntPtr.Zero;
             });
         };
+        // maximised, a window may still stick out past the screen (what Windows does depends on the monitor and its
+        // taskbar): its content is pulled in by exactly that much, so the window buttons are never cut off
+        w.StateChanged += (_, _) => FitMaximized(w);
+        w.LocationChanged += (_, _) => { if (w.WindowState == WindowState.Maximized) FitMaximized(w); };
+        w.DpiChanged += (_, _) => FitMaximized(w);
         if (forceDark == null)
         {
             void OnTheme() => Theme.ApplyFrame(w);
             Theme.Changed += OnTheme;
             w.Closed += (_, _) => Theme.Changed -= OnTheme;
         }
+    }
+
+    /// <summary>The resize edge (HT code) under the point of a WM_NCHITTEST, or 0 - only for a normal, resizable window.</summary>
+    private static int EdgeAt(Window w, IntPtr hwnd, IntPtr lParam)
+    {
+        if (w.WindowState != WindowState.Normal || w.ResizeMode is ResizeMode.NoResize or ResizeMode.CanMinimize) return 0;
+        var border = WindowChrome.GetWindowChrome(w)?.ResizeBorderThickness ?? new Thickness(0);
+        if (border.Top <= 0 && border.Right <= 0) return 0; // e.g. a player in full screen
+        int x = Native.LoWord(lParam), y = Native.HiWord(lParam);
+        Native.GetWindowRect(hwnd, out var r);
+        double k = Native.GetDpiForWindow(hwnd) / 96.0;
+        if (k <= 0) k = 1;
+        bool l = x < r.Left + border.Left * k, rt = x >= r.Right - border.Right * k;
+        bool t = y < r.Top + border.Top * k, b = y >= r.Bottom - border.Bottom * k;
+        return (t, b, l, rt) switch
+        {
+            (true, _, true, _) => Native.HTTOPLEFT,
+            (true, _, _, true) => Native.HTTOPRIGHT,
+            (_, true, true, _) => Native.HTBOTTOMLEFT,
+            (_, true, _, true) => Native.HTBOTTOMRIGHT,
+            (true, _, _, _) => Native.HTTOP,
+            (_, true, _, _) => Native.HTBOTTOM,
+            (_, _, true, _) => Native.HTLEFT,
+            (_, _, _, true) => Native.HTRIGHT,
+            _ => 0,
+        };
+    }
+
+    private static void FitMaximized(Window w)
+    {
+        var hwnd = new WindowInteropHelper(w).Handle;
+        if (hwnd == IntPtr.Zero) return;
+        if (w.WindowState != WindowState.Maximized)
+        {
+            if (w.BorderThickness != default) w.BorderThickness = default;
+            return;
+        }
+        Native.GetWindowRect(hwnd, out var r);
+        var info = new Native.MONITORINFOEX { cbSize = Marshal.SizeOf<Native.MONITORINFOEX>() };
+        if (!Native.GetMonitorInfo(Native.MonitorFromWindow(hwnd, Native.MONITOR_DEFAULTTONEAREST), ref info)) return;
+        var work = info.rcWork;
+        double k = Native.GetDpiForWindow(hwnd) / 96.0;
+        if (k <= 0) k = 1;
+        w.BorderThickness = new Thickness(Math.Max(0, work.Left - r.Left) / k, Math.Max(0, work.Top - r.Top) / k,
+            Math.Max(0, r.Right - work.Right) / k, Math.Max(0, r.Bottom - work.Bottom) / k);
     }
 
     private static void FixMaximize(Window w, IntPtr hwnd, IntPtr lParam)
@@ -105,7 +165,8 @@ public static class WindowHelper
             if (fg == IntPtr.Zero) return false;
             Native.GetWindowThreadProcessId(fg, out uint pid);
             if (pid == (uint)Environment.ProcessId) return false;
-            if (Native.ClassName(fg) is "Progman" or "WorkerW" or "Shell_TrayWnd") return false;
+            // the desktop, the taskbar, and Windows' own full-screen surfaces (lock screen, Start, search) are no game
+            if (Native.ClassName(fg) is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Windows.UI.Core.CoreWindow" or "LockScreenBackstopFrame") return false;
             if (!Native.GetWindowRect(fg, out var r)) return false;
             var info = new Native.MONITORINFOEX { cbSize = Marshal.SizeOf<Native.MONITORINFOEX>() };
             if (!Native.GetMonitorInfo(Native.MonitorFromWindow(fg, Native.MONITOR_DEFAULTTONEAREST), ref info)) return false;
@@ -117,6 +178,12 @@ public static class WindowHelper
 
     public static void BringToFront(Window w)
     {
+        if (AppPaths.Ghost)
+        {
+            // a test copy that must not be seen: on (out of sight), never in front
+            if (!w.IsVisible) { w.ShowActivated = false; w.Show(); }
+            return;
+        }
         if (w.WindowState == WindowState.Minimized) w.WindowState = WindowState.Normal;
         if (!w.IsVisible) w.Show();
         w.Activate();
@@ -152,7 +219,8 @@ public sealed class CaptionButtons : StackPanel
     {
         Orientation = Orientation.Horizontal;
         HorizontalAlignment = HorizontalAlignment.Right;
-        VerticalAlignment = VerticalAlignment.Top;
+        // as tall as the toolbar they sit in: their pictures land on its middle line, with its other buttons
+        VerticalAlignment = VerticalAlignment.Stretch;
         WindowChrome.SetIsHitTestVisibleInChrome(this, true);
         Build();
         Loaded += OnLoaded;
@@ -205,7 +273,8 @@ public sealed class CaptionButtons : StackPanel
 /// <summary>Apple-style HUD toast ("Copied", "Saved") that fades by itself.</summary>
 public static class Hud
 {
-    public static void Show(string text, string icon = "check", Window? over = null)
+    /// <summary>A big, short-lived message in the middle (of <paramref name="over"/> or of the screen), with an optional smaller line under it.</summary>
+    public static void Show(string text, string icon = "check", Window? over = null, string? hint = null)
     {
         try
         {
@@ -236,6 +305,18 @@ public static class Hud
                 MaxWidth = 260,
                 FontFamily = (FontFamily)Application.Current.FindResource("Font.UI"),
             });
+            if (!string.IsNullOrEmpty(hint))
+                panel.Children.Add(new TextBlock
+                {
+                    Text = hint,
+                    Foreground = new SolidColorBrush(Color.FromArgb(0xB0, 0xFF, 0xFF, 0xFF)),
+                    FontSize = 12,
+                    TextAlignment = TextAlignment.Center,
+                    TextWrapping = TextWrapping.Wrap,
+                    MaxWidth = 260,
+                    Margin = new Thickness(0, 5, 0, 0),
+                    FontFamily = (FontFamily)Application.Current.FindResource("Font.UI"),
+                });
             var box = new Border
             {
                 Background = new SolidColorBrush(Color.FromArgb(0xE6, 0x1F, 0x1F, 0x22)),
@@ -270,7 +351,7 @@ public static class Hud
 
                 var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(130));
                 w.BeginAnimation(UIElement.OpacityProperty, fadeIn);
-                var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1150) };
+                var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(hint == null ? 1150 : 1900) };
                 timer.Tick += (_, _) =>
                 {
                     timer.Stop();

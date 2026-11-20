@@ -172,7 +172,7 @@ internal static class Marketing
         doc.Items.Add(new LineAnnotation { Arrow = true, Width = u, Color = red, A = new Point(345, 157), B = new Point(494, 124) });
         doc.Items.Add(new CounterAnnotation { Number = 1, Width = u, Color = red, Center = new Point(700, 90) });
         doc.Items.Add(new CounterAnnotation { Number = 2, Width = u, Color = red, Center = new Point(615, 281) });
-        doc.Items.Add(new TextAnnotation { Text = L.IsPolish ? "Twój skrót" : "Your shortcut", Width = u * 0.95, Color = red, Position = new Point(196, 142) });
+        doc.Items.Add(new CaptionAnnotation { Text = L.IsPolish ? "Twój skrót" : "Your shortcut", Style = Player.Edit.CaptionStyle.Fill, Size = 0.07, Color = red, Center = new Point(262, 160), CanvasWidth = doc.Width, CanvasHeight = doc.Height });
         doc.Items.Add(new StrokeAnnotation { Highlighter = true, Width = u, Color = Color.FromRgb(0xFF, 0xCC, 0x00), Points = { new Point(40, 286), new Point(252, 286) } });
         var ed = new EditorWindow(doc);
         ed.View.SetZoom(1.0);

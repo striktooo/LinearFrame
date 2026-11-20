@@ -9,8 +9,9 @@ using LinearFrame.Core;
 namespace LinearFrame.Player.Edit;
 
 /// <summary>
-/// The emoji gallery, like the iPhone keyboard: recently used first, then the iOS categories, tabs to jump between them.
-/// All ~1900 emoji are one drawing over one shared sheet picture, so scrolling is just moving it.
+/// The emoji gallery, like the iPhone keyboard: a search field (Polish and English words), recently used first, then the
+/// iOS categories, tabs to jump between them. All ~1900 emoji are one drawing over one shared sheet picture, so scrolling
+/// is just moving it.
 /// </summary>
 public sealed class EmojiPicker : Border
 {
@@ -18,6 +19,8 @@ public sealed class EmojiPicker : Border
     private readonly ScrollViewer _scroll;
     private readonly StackPanel _tabs = new() { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
     private readonly TextBlock _status;
+    private readonly TextBox _search;
+    private readonly TextBlock _hint;
     private bool _loading;
 
     public event Action<AppleEmoji.Entry>? Picked;
@@ -26,7 +29,7 @@ public sealed class EmojiPicker : Border
     public EmojiPicker()
     {
         Width = 404;
-        Height = 360;
+        Height = 396;
         CornerRadius = new CornerRadius(14);
         Background = new SolidColorBrush(Color.FromArgb(0xF7, 0x23, 0x23, 0x26));
         BorderBrush = new SolidColorBrush(Color.FromArgb(0x30, 255, 255, 255));
@@ -52,12 +55,51 @@ public sealed class EmojiPicker : Border
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(30, 0, 30, 0),
         };
+        // the search field (a flat rounded field, like the iOS one)
+        _search = new TextBox
+        {
+            Foreground = Brushes.White,
+            CaretBrush = Brushes.White,
+            SelectionBrush = new SolidColorBrush(Color.FromRgb(0x0A, 0x84, 0xFF)),
+            FontSize = 13.5,
+            Padding = new Thickness(30, 0, 8, 0),
+            VerticalContentAlignment = VerticalAlignment.Center,
+            Template = (ControlTemplate)System.Windows.Markup.XamlReader.Parse(
+                "<ControlTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' TargetType='TextBox'>" +
+                "<Border Background='#3A3A3C' CornerRadius='9'><ScrollViewer x:Name='PART_ContentHost' VerticalAlignment='Center'" +
+                " HorizontalScrollBarVisibility='Hidden' VerticalScrollBarVisibility='Hidden'/></Border></ControlTemplate>"),
+        };
+        _hint = new TextBlock
+        {
+            Text = L.T("Edit.EmojiSearch"),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x8E, 0x8E, 0x93)),
+            FontSize = 13.5,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(31, 0, 0, 0),
+            IsHitTestVisible = false,
+        };
+        var glass = new UI.IconView { Icon = "search", Width = 15, Height = 15, Foreground = _hint.Foreground, Margin = new Thickness(10, 0, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
+        var searchBox = new Grid { Height = 30, Margin = new Thickness(2, 2, 2, 4) };
+        searchBox.Children.Add(_search);
+        searchBox.Children.Add(glass);
+        searchBox.Children.Add(_hint);
+        _search.TextChanged += (_, _) => OnSearch();
+        _search.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape && _search.Text.Length > 0) { _search.Clear(); e.Handled = true; }
+            else if (e.Key == Key.Enter && _grid.First is AppleEmoji.Entry first) { _grid.Pick(first); e.Handled = true; }
+        };
+
         var root = new Grid();
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(38) });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(36) });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // the tabs (gone while searching)
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        _tabs.Height = 38;
+        root.Children.Add(searchBox);
+        Grid.SetRow(_tabs, 1);
         root.Children.Add(_tabs);
-        Grid.SetRow(_scroll, 1);
-        Grid.SetRow(_status, 1);
+        Grid.SetRow(_scroll, 2);
+        Grid.SetRow(_status, 2);
         root.Children.Add(_scroll);
         root.Children.Add(_status);
         Child = root;
@@ -68,10 +110,36 @@ public sealed class EmojiPicker : Border
         };
     }
 
+    /// <summary>A caption is being typed into the search field (keys belong to it, not to the editor's shortcuts).</summary>
+    internal bool IsTyping => _search.IsKeyboardFocusWithin;
+    internal void TestSearch(string q) => _search.Text = q;
+
+    private void OnSearch()
+    {
+        string q = _search.Text;
+        _hint.Visibility = q.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (!_grid.HasContent) return;
+        if (q.Trim().Length == 0)
+        {
+            _grid.SetSearch(null, "");
+            _tabs.Visibility = Visibility.Visible;
+            _status.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            var found = AppleEmoji.Search(q);
+            _grid.SetSearch(found, L.T("Edit.EmojiResults"));
+            _tabs.Visibility = Visibility.Collapsed;
+            _status.Text = L.T("Edit.EmojiNone");
+            _status.Visibility = found.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        _scroll.ScrollToVerticalOffset(0);
+    }
+
     /// <summary>Fetches (first time only) and shows the gallery.</summary>
     public async Task LoadAsync()
     {
-        if (_grid.HasContent) { _grid.SetRecent(Recent()); return; }
+        if (_grid.HasContent) { _grid.SetRecent(Recent()); BuildRecentTab(); return; }
         if (_loading) return;
         _loading = true;
         _status.Text = AppleEmoji.IsDownloaded ? L.T("Edit.EmojiLoading") : L.T("Edit.EmojiDownloading");
@@ -95,9 +163,29 @@ public sealed class EmojiPicker : Border
         finally { _loading = false; }
     }
 
+    private Button? _recentTab;
+
+    /// <summary>The clock tab (recently used) is there once something was used.</summary>
+    private void BuildRecentTab()
+    {
+        if (_recentTab != null) _recentTab.Visibility = Recent().Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     private void BuildTabs(BitmapSource sheet, IReadOnlyList<AppleEmoji.Entry> catalog)
     {
         _tabs.Children.Clear();
+        _recentTab = new Button
+        {
+            Content = new UI.IconView { Icon = "clock", Width = 17, Height = 17, Foreground = Brushes.White, Opacity = 0.85 },
+            ToolTip = L.T("Edit.EmojiTab.recent"),
+            Width = 38,
+            Height = 32,
+            Margin = new Thickness(1, 0, 1, 0),
+        };
+        _recentTab.SetResourceReference(StyleProperty, "Hud.IconButton");
+        _recentTab.Click += (_, _) => _scroll.ScrollToVerticalOffset(_grid.SectionTop("recent"));
+        _tabs.Children.Add(_recentTab);
+        BuildRecentTab();
         double k = sheet.PixelWidth / (double)(AppleEmoji.SheetCells * AppleEmoji.SheetCell);
         for (int i = 0; i < AppleEmoji.Tabs.Length; i++)
         {
@@ -106,7 +194,7 @@ public sealed class EmojiPicker : Border
             var e = catalog.FirstOrDefault(x => x.Unified == code || x.NonQualified == code || x.Unified.Replace("-fe0f", "") == code.Replace("-fe0f", ""));
             var face = new Rectangle { Width = 20, Height = 20, Opacity = 0.85 };
             if (e != null) face.Fill = EmojiGrid.BrushFor(sheet, e, k);
-            var b = new Button { Content = face, ToolTip = L.T("Edit.EmojiTab." + key), Width = 42, Height = 32, Margin = new Thickness(1, 0, 1, 0) };
+            var b = new Button { Content = face, ToolTip = L.T("Edit.EmojiTab." + key), Width = 38, Height = 32, Margin = new Thickness(1, 0, 1, 0) };
             b.SetResourceReference(StyleProperty, "Hud.IconButton");
             int index = i;
             b.Click += (_, _) => _scroll.ScrollToVerticalOffset(_grid.SectionTop(key));
@@ -150,6 +238,32 @@ internal sealed class EmojiGrid : FrameworkElement
 
     public event Action<AppleEmoji.Entry>? Picked;
     public bool HasContent => _sheet != null;
+    private List<(string Key, string Title, List<AppleEmoji.Entry> Items)>? _normal;
+
+    /// <summary>The first emoji shown (Enter in the search field picks it).</summary>
+    public AppleEmoji.Entry? First => _sections.FirstOrDefault(s => s.Items.Count > 0).Items?.FirstOrDefault();
+
+    public void Pick(AppleEmoji.Entry e) => Picked?.Invoke(e);
+
+    /// <summary>Search results instead of the categories (null = back to the categories).</summary>
+    public void SetSearch(List<AppleEmoji.Entry>? results, string title)
+    {
+        if (results == null)
+        {
+            if (_normal == null) return;
+            _sections.Clear();
+            _sections.AddRange(_normal);
+            _normal = null;
+        }
+        else
+        {
+            _normal ??= _sections.ToList();
+            _sections.Clear();
+            _sections.Add(("search", title, results));
+        }
+        InvalidateMeasure();
+        InvalidateVisual();
+    }
 
     public EmojiGrid()
     {
@@ -198,7 +312,8 @@ internal sealed class EmojiGrid : FrameworkElement
     {
         if (_catalog == null || _sections.Count == 0) return;
         var by = _catalog.ToDictionary(e => e.Unified, e => e);
-        _sections[0] = (_sections[0].Key, _sections[0].Title, recent.Select(r => by.GetValueOrDefault(r)).Where(e => e != null).Select(e => e!).ToList());
+        var sections = _normal ?? _sections; // while a search shows, the categories wait aside
+        sections[0] = (sections[0].Key, sections[0].Title, recent.Select(r => by.GetValueOrDefault(r)).Where(e => e != null).Select(e => e!).ToList());
         InvalidateMeasure();
         InvalidateVisual();
     }

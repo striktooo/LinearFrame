@@ -9,7 +9,7 @@
         WindowStartupLocation="CenterScreen" Background="Black" Foreground="White"
         FontFamily="{StaticResource Font.UI}" FontSize="13" UseLayoutRounding="True">
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="0" ResizeBorderThickness="6" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"/>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="8" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"/>
     </WindowChrome.WindowChrome>
 
     <Grid x:Name="Root">
@@ -35,31 +35,19 @@
             </Canvas>
 
             <!-- audio-only view: cover, title and the whole song as a waveform - everything scales with the window -->
-            <Grid x:Name="AudioView" Visibility="Collapsed">
-                <Grid.Background>
-                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                        <GradientStop Color="#2B2550" Offset="0"/>
-                        <GradientStop Color="#141418" Offset="1"/>
-                    </LinearGradientBrush>
-                </Grid.Background>
+            <Grid x:Name="AudioView" Visibility="Collapsed" Background="#161618">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="42"/>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="112"/>
                 </Grid.RowDefinitions>
                 <StackPanel x:Name="AudioStack" Grid.Row="1" VerticalAlignment="Center" Margin="32,0">
-                    <Border x:Name="ArtBorder" Width="160" Height="160" CornerRadius="14" HorizontalAlignment="Center">
-                        <Border.Background>
-                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                <GradientStop Color="#7B61FF" Offset="0"/>
-                                <GradientStop Color="#1FB6FF" Offset="1"/>
-                            </LinearGradientBrush>
-                        </Border.Background>
+                    <Border x:Name="ArtBorder" Width="160" Height="160" CornerRadius="14" HorizontalAlignment="Center" Background="#2C2C2E">
                         <Border.Effect>
                             <DropShadowEffect BlurRadius="30" ShadowDepth="6" Opacity="0.5" Direction="270"/>
                         </Border.Effect>
                         <Grid>
-                            <ui:IconView x:Name="ArtIcon" Icon="music" Width="64" Height="64" StrokeWidth="1.4" Foreground="White"/>
+                            <ui:IconView x:Name="ArtIcon" Icon="music" Width="64" Height="64" StrokeWidth="1.4" Foreground="#FF375F"/>
                             <Border x:Name="ArtImageHost" CornerRadius="14" ClipToBounds="True" Visibility="Collapsed"/>
                         </Grid>
                     </Border>

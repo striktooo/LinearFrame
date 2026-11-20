@@ -100,7 +100,13 @@ public sealed class CaptureOverlayWindow : Window
             else Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(Reveal));
         };
         PreviewKeyDown += (_, e) => _session.HandleKey(this, e);
-        Closed += (_, _) => _session.SizeChanged -= OnSizeChanged;
+        Closed += (_, _) =>
+        {
+            _session.SizeChanged -= OnSizeChanged;
+            // a QR look that was still waiting would read a capture that is over (and hold its screen picture meanwhile)
+            _closed = true;
+            _qrTimer?.Stop();
+        };
 
         MouseMove += OnMouseMove;
         MouseLeftButtonDown += OnMouseDown;
@@ -119,6 +125,17 @@ public sealed class CaptureOverlayWindow : Window
 
     internal BitmapSource Shot => _shot;
     internal Int32Rect? Selection => _sel;
+
+    /// <summary>What an action works on: the selection, or the window under the mouse when nothing is selected yet.</summary>
+    internal Int32Rect? Target
+    {
+        get
+        {
+            Int32Rect? t = _sel;
+            if (t == null && _mode == Mode.Idle && _mouseInside) { UpdateHover(); t = _hover; }
+            return t;
+        }
+    }
     internal Int32Rect? Hover => _mode == Mode.Idle ? _hover : null;
     internal bool ShowHandles => _mode == Mode.Selected;
     internal bool IsDragging => _mode is Mode.Dragging or Mode.Moving or Mode.Resizing;
@@ -213,6 +230,7 @@ public sealed class CaptureOverlayWindow : Window
         }
 
         panel.Children.Add(new Border { Width = 1, Margin = new Thickness(4, 7, 4, 7), Background = new SolidColorBrush(Color.FromArgb(0x40, 255, 255, 255)) });
+        panel.Children.Add(Icon("textscan", L.T("Capture.CopyTextTip"), () => _session.CopyText(this)));
         panel.Children.Add(Icon("save", L.T("Capture.SaveAs"), () => Commit(CaptureAction.SaveAs)));
         panel.Children.Add(Icon("close", L.T("Capture.Cancel"), () => _session.Cancel()));
 
@@ -245,7 +263,9 @@ public sealed class CaptureOverlayWindow : Window
         return (bar, sizeText);
     }
 
-    private static readonly Brush HdOnBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0xD6, 0x0A));
+    private static readonly Brush HdOnBrush = Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0xD6, 0x0A)));
+
+    private static T Frozen<T>(T f) where T : Freezable { f.Freeze(); return f; }
 
     private void UpdateHdLook()
     {
@@ -296,6 +316,96 @@ public sealed class CaptureOverlayWindow : Window
         x = Math.Clamp(x, 8, Math.Max(8, w - size.Width - 8));
         Canvas.SetLeft(_toolbar, Math.Round(x));
         Canvas.SetTop(_toolbar, Math.Round(y));
+        ScheduleQr();
+    }
+
+    // ------------------------------------------------------------------ a QR code in the selection
+
+    private DispatcherTimer? _qrTimer;
+    private Int32Rect? _qrFor;
+    private Button? _qrPill;
+    private bool _closed;
+
+    /// <summary>The selection settled: look for a QR code in it (a moment later, off the UI thread).</summary>
+    private void ScheduleQr()
+    {
+        if (_closed || _sel is not Int32Rect || _mode != Mode.Selected || _sel == _qrFor) return;
+        RemoveQrPill();
+        _qrTimer ??= new DispatcherTimer(TimeSpan.FromMilliseconds(180), DispatcherPriority.Background, (_, _) => ScanQr(), Dispatcher);
+        _qrTimer.Stop();
+        _qrTimer.Start();
+    }
+
+    private async void ScanQr()
+    {
+        _qrTimer?.Stop();
+        if (_closed || _sel is not Int32Rect s || _mode != Mode.Selected || _busy != null) return;
+        _qrFor = s;
+        var r = ImageOps.Intersect(s, new Int32Rect(0, 0, _shot.PixelWidth, _shot.PixelHeight));
+        if (r.Width < 21 || r.Height < 21) return;
+        var crop = new CroppedBitmap(_shot, r);
+        crop.Freeze();
+        List<QrReader.Code> codes;
+        try { codes = await Task.Run(() => QrReader.Read(PixelBuffer.FromBitmap(crop))); }
+        catch { return; }
+        if (_closed || _sel != s || _mode != Mode.Selected || _busy != null || codes.Count == 0) return;
+        ShowQrPill(codes[0], r);
+    }
+
+    private void ShowQrPill(QrReader.Code code, Int32Rect r)
+    {
+        RemoveQrPill();
+        string? link = code.Link;
+        var content = new StackPanel { Orientation = Orientation.Horizontal };
+        content.Children.Add(new IconView { Icon = link != null ? "link" : "copy", Width = 15, Height = 15, Margin = new Thickness(0, 0, 8, 0) });
+        content.Children.Add(new TextBlock
+        {
+            Text = link != null ? L.F("Capture.QrOpen", Viewer.LiveText.Short(link)) : L.T("Live.QrCopy"),
+            MaxWidth = 340,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var pill = new Button { Content = content, ToolTip = code.Text, Padding = new Thickness(13, 7, 14, 7), Cursor = Cursors.Hand };
+        pill.SetResourceReference(StyleProperty, "Hud.Primary");
+        TextElement.SetFontFamily(pill, (FontFamily)FindResource("Font.UI"));
+        pill.MouseLeftButtonDown += (_, e) => e.Handled = true;
+        pill.MouseLeftButtonUp += (_, e) => e.Handled = true;
+        pill.Click += (_, _) =>
+        {
+            _session.Cancel();
+            if (link != null) ShellUtil.Open(link);
+            else if (ImageIO.CopyText(code.Text)) Hud.Show(L.T("Live.Copied"), "copy");
+        };
+        // right under the code, inside the selection
+        var b = code.Bounds;
+        double k = Scale;
+        pill.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var size = pill.DesiredSize;
+        var rootEl = (FrameworkElement)Content;
+        double x = (r.X + b.X + b.Width / 2) / k - size.Width / 2;
+        double y = (r.Y + b.Bottom) / k + 10;
+        if (y + size.Height > (r.Y + r.Height) / k - 6) y = (r.Y + b.Y) / k - size.Height - 10;
+        Canvas.SetLeft(pill, Math.Round(Math.Clamp(x, 8, Math.Max(8, rootEl.ActualWidth - size.Width - 8))));
+        Canvas.SetTop(pill, Math.Round(Math.Clamp(y, 8, Math.Max(8, rootEl.ActualHeight - size.Height - 8))));
+        _layer.Children.Add(pill);
+        _qrPill = pill;
+    }
+
+    private void RemoveQrPill()
+    {
+        if (_qrPill == null) return;
+        _layer.Children.Remove(_qrPill);
+        _qrPill = null;
+        _qrFor = null;
+    }
+
+    /// <summary>Reading text failed or found nothing: the selection is back in use.</summary>
+    public void EndBusy()
+    {
+        _busy = null;
+        Cursor = Cursors.Arrow;
+        _surface.Redraw();
+        PositionToolbar();
     }
 
     // ------------------------------------------------------------------ mouse
@@ -359,6 +469,7 @@ public sealed class CaptureOverlayWindow : Window
     {
         if (_busy != null) return;
         Focus();
+        RemoveQrPill();
         var p = ToPx(e);
         _mousePx = p;
         if (e.ClickCount == 2 && _sel is Int32Rect sd && Contains(sd, p))
@@ -538,7 +649,6 @@ internal sealed class SelectionSurface : FrameworkElement
     private static readonly Brush Dim = Frozen(new SolidColorBrush(Color.FromArgb(0x78, 0, 0, 0)));
     private static readonly Brush HoverFill = Frozen(new SolidColorBrush(Color.FromArgb(0x14, 0x0A, 0x84, 0xFF)));
     private static readonly Pen HoverPen = Frozen(new Pen(new SolidColorBrush(Color.FromRgb(0x0A, 0x84, 0xFF)), 2));
-    private static readonly Pen WhitePen = Frozen(new Pen(Brushes.White, 1));
     private static readonly Pen HandlePen = Frozen(new Pen(new SolidColorBrush(Color.FromArgb(0x70, 0, 0, 0)), 1));
     private static readonly Brush LabelBg = Frozen(new SolidColorBrush(Color.FromArgb(0xE0, 0x1F, 0x1F, 0x22)));
     private static readonly Typeface Face = new(new FontFamily("Segoe UI Variable Text, Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);

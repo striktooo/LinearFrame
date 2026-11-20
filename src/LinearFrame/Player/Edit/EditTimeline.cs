@@ -26,6 +26,8 @@ public sealed class EditTimeline : FrameworkElement
     private static readonly Brush EmojiBar = Frozen(new SolidColorBrush(Color.FromRgb(0xBF, 0x5A, 0xF2)));
     private static readonly Brush BannerBar = Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0x5E, 0x57)));
     private static readonly Brush TrimDim = Frozen(new SolidColorBrush(Color.FromArgb(0xB0, 0x10, 0x10, 0x12)));
+    private static readonly Brush GhostWave = Frozen(new SolidColorBrush(Color.FromArgb(0x55, 0x8E, 0x8E, 0x93)));
+    private static readonly Pen HeadShadow = Frozen(new Pen(new SolidColorBrush(Color.FromArgb(0x70, 0, 0, 0)), 4));
     private static readonly Typeface Ui = new(new FontFamily("Segoe UI Variable Text, Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
     private static readonly Typeface EmojiFace = new("Segoe UI Emoji");
 
@@ -38,6 +40,15 @@ public sealed class EditTimeline : FrameworkElement
 
     private double _pps = 1, _scroll;
     private bool _fit = true;
+    // how long a stretch of time the fitted time line shows: it grows with the edit, never shrinks with it - a cut or a
+    // trim moves the pieces, the time line doesn't stretch them back out to the full width
+    private double _viewLength;
+    // what was trimmed off the edit's start and end: still on the strip, dimmed - like trimming on an iPhone - it doesn't
+    // play, but it is there to pull the edge back out over. _lead = how much time is shown before the edit's start.
+    private Piece? _ghostHead, _ghostTail;
+    private double _lead;
+    // where a drag of the playhead last asked to go
+    private double _seekF;
     private double _position;
 
     // dragging
@@ -81,6 +92,7 @@ public sealed class EditTimeline : FrameworkElement
     public void SetProject(EditProject p)
     {
         Project = p;
+        _viewLength = 0;
         Rebuild();
     }
 
@@ -114,6 +126,25 @@ public sealed class EditTimeline : FrameworkElement
         RenderContent();
     }
 
+    /// <summary>
+    /// The edit's own waveform: the kept pieces one after another, the way they play (for a song's big waveform above
+    /// the editor). Null until every piece's sound has been read.
+    /// </summary>
+    public float[]? EditedWave()
+    {
+        if (Project == null || Project.Segments.Count == 0) return null;
+        var list = new List<float>();
+        foreach (var s in Project.Segments)
+        {
+            var clip = Project.Clips[s.Clip];
+            if (!_waves.TryGetValue(s.Clip, out var peaks) || peaks.Length == 0 || clip.Duration <= 0) return null;
+            double perSec = peaks.Length / clip.Duration;
+            int a = Math.Max(0, (int)Math.Floor(s.In * perSec)), b = Math.Min(peaks.Length, (int)Math.Ceiling(s.Out * perSec));
+            for (int i = a; i < b; i++) list.Add(peaks[i]);
+        }
+        return list.Count > 0 ? list.ToArray() : null;
+    }
+
     public void Select(int segment, EditOverlay? overlay)
     {
         SelectedSegment = segment;
@@ -122,7 +153,11 @@ public sealed class EditTimeline : FrameworkElement
     }
 
     /// <summary>After any change of the edit: lays out pieces and lanes again.</summary>
-    public void Rebuild()
+    /// <summary>
+    /// Lays the pieces and bars out again and draws them - at once, or (<paramref name="nextFrame"/>, while a bar or
+    /// an edge is being dragged) on the next frame, once however many mouse moves come before it.
+    /// </summary>
+    public void Rebuild(bool nextFrame = false)
     {
         if (Project == null) return;
         _pieces = Project.Pieces();
@@ -139,7 +174,42 @@ public sealed class EditTimeline : FrameworkElement
         if (lanes != _lanes) { _lanes = lanes; InvalidateMeasure(); }
         if (SelectedSegment >= Project.Segments.Count) SelectedSegment = -1;
         if (SelectedOverlay != null && !Project.Overlays.Contains(SelectedOverlay)) SelectedOverlay = null;
+        _ghostHead = _ghostTail = null;
+        _lead = 0;
+        if (Project.Segments.Count > 0)
+        {
+            var first = Project.Segments[0];
+            if (first.In > 0.05)
+            {
+                _lead = first.In;
+                _ghostHead = new Piece(-1, first.Clip, -1, -first.In, 0, 0, first.In);
+            }
+            var last = Project.Segments[^1];
+            double rest = Project.Clips[last.Clip].Duration - last.Out;
+            if (rest > 0.05) _ghostTail = new Piece(-1, last.Clip, -1, Total, Total + rest, last.Out, last.Out + rest);
+        }
+        if (Span > _viewLength) _viewLength = Span;
         if (_fit) FitZoom();
+        if (nextFrame) { RequestContent(); return; }
+        RenderContent();
+        RenderHead();
+    }
+
+    // a drawing asked for on the next frame (a 1000 Hz mouse moves far more often than the screen shows anything)
+    private bool _contentPending;
+
+    private void RequestContent()
+    {
+        if (_contentPending) return;
+        _contentPending = true;
+        CompositionTarget.Rendering += DrawPending;
+    }
+
+    private void DrawPending(object? sender, EventArgs e)
+    {
+        CompositionTarget.Rendering -= DrawPending;
+        if (!_contentPending) return;
+        _contentPending = false;
         RenderContent();
         RenderHead();
     }
@@ -154,7 +224,7 @@ public sealed class EditTimeline : FrameworkElement
             double x = X(_position);
             if (!_fit && _drag == Drag.None && (x < Side || x > ActualWidth - Side))
             {
-                _scroll = Math.Max(0, _position - (ActualWidth - 2 * Side) * 0.25 / _pps);
+                _scroll = Math.Max(0, _position + _lead - (ActualWidth - 2 * Side) * 0.25 / _pps);
                 RenderContent();
             }
             RenderHead();
@@ -164,14 +234,17 @@ public sealed class EditTimeline : FrameworkElement
     // ------------------------------------------------------------------ geometry
 
     private double Total => Math.Max(0.01, Project?.FinalLength ?? 1);
+    /// <summary>The edit with its trimmed-off start and end around it.</summary>
+    private double Span => _lead + Total + (_ghostTail is { } g ? g.F1 - g.F0 : 0);
+    private double ViewLength => Math.Max(Span, _viewLength);
     private double WaveTop => TrackTop + TrackH + WaveGap;
     private double LanesTop => WaveTop + WaveH + 6;
-    private double X(double f) => Side + (f - _scroll) * _pps;
-    private double F(double x) => _scroll + (x - Side) / _pps;
+    private double X(double f) => Side + (f + _lead - _scroll) * _pps;
+    private double F(double x) => _scroll + (x - Side) / _pps - _lead;
 
     private void FitZoom()
     {
-        _pps = Math.Max(0.0001, (ActualWidth - 2 * Side) / Total);
+        _pps = Math.Max(0.0001, (ActualWidth - 2 * Side) / ViewLength);
         _scroll = 0;
     }
 
@@ -182,7 +255,7 @@ public sealed class EditTimeline : FrameworkElement
     {
         base.OnRenderSizeChanged(info);
         if (_fit) FitZoom();
-        else _pps = Math.Max(_pps, (ActualWidth - 2 * Side) / Total);
+        else _pps = Math.Max(_pps, (ActualWidth - 2 * Side) / ViewLength);
         RenderContent();
         RenderHead();
     }
@@ -199,6 +272,22 @@ public sealed class EditTimeline : FrameworkElement
 
         double dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         var track = new Rect(0, TrackTop, w, TrackH);
+
+        // the trimmed-off start and end, dimmed
+        foreach (var (ghost, head) in new[] { (_ghostHead, true), (_ghostTail, false) })
+        {
+            if (ghost is not { } gp) continue;
+            double gl = X(gp.F0) + (head ? 0 : 1.5), gr = X(gp.F1) - (head ? 1.5 : 0);
+            if (gr < 0 || gl > w || gr - gl < 0.5) continue;
+            var rect = new Rect(gl, TrackTop, gr - gl, TrackH);
+            dc.PushClip(RoundedRect(rect, head ? 7 : 0, head ? 0 : 7));
+            dc.DrawRectangle(TrackBg, null, rect);
+            DrawStrip(dc, gp, rect);
+            dc.DrawRectangle(TrimDim, null, rect);
+            dc.Pop();
+            DrawWave(dc, gp, gl, gr, GhostWave);
+        }
+
         int segStartPiece = 0;
         for (int i = 0; i < _pieces.Count; i++)
         {
@@ -315,7 +404,8 @@ public sealed class EditTimeline : FrameworkElement
         double[] steps = { 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800 };
         double step = steps.FirstOrDefault(s => s * _pps >= 70, 3600);
         double t0 = Math.Floor(F(0) / step) * step;
-        for (double t = Math.Max(0, t0); X(t) < w; t += step)
+        // times only over the edit itself: the dimmed, trimmed-off parts around it don't play
+        for (double t = Math.Max(0, t0); X(t) < w && t <= Total + 1e-6; t += step)
         {
             double x = Math.Round(X(t)) + 0.5;
             if (x < 0) continue;
@@ -325,7 +415,7 @@ public sealed class EditTimeline : FrameworkElement
             for (int k = 1; k < 4; k++)
             {
                 double xs = Math.Round(X(t + step * k / 4)) + 0.5;
-                if (xs < w) dc.DrawLine(Tick, new Point(xs, RulerH - 2), new Point(xs, RulerH));
+                if (xs < w && t + step * k / 4 <= Total + 1e-6) dc.DrawLine(Tick, new Point(xs, RulerH - 2), new Point(xs, RulerH));
             }
         }
     }
@@ -357,13 +447,13 @@ public sealed class EditTimeline : FrameworkElement
         }
     }
 
-    private void DrawWave(DrawingContext dc, Piece pc, double l, double r)
+    private void DrawWave(DrawingContext dc, Piece pc, double l, double r, Brush? brush = null)
     {
         if (Project == null || pc.IsHold || !_waves.TryGetValue(pc.Clip, out var peaks) || peaks.Length == 0) return;
         var clip = Project.Clips[pc.Clip];
         double perSec = peaks.Length / Math.Max(0.01, clip.Duration);
         double mid = WaveTop + WaveH / 2;
-        var brush = pc.Segment == SelectedSegment ? WaveSel : WaveBrush;
+        brush ??= pc.Segment == SelectedSegment ? WaveSel : WaveBrush;
         double x0 = X(pc.F0);
         for (double x = Math.Max(l, 0); x < Math.Min(r, ActualWidth); x += 3)
         {
@@ -414,8 +504,7 @@ public sealed class EditTimeline : FrameworkElement
         if (Project == null || ActualWidth <= 0) return;
         double x = Math.Round(X(_position) * 2) / 2;
         if (x < -2 || x > ActualWidth + 2) return;
-        var shadow = new Pen(new SolidColorBrush(Color.FromArgb(0x70, 0, 0, 0)), 4);
-        dc.DrawLine(shadow, new Point(x, RulerH - 2), new Point(x, ActualHeight));
+        dc.DrawLine(HeadShadow, new Point(x, RulerH - 2), new Point(x, ActualHeight));
         dc.DrawRectangle(Brushes.White, null, new Rect(x - 1, RulerH - 2, 2, ActualHeight - RulerH + 2));
         dc.DrawRoundedRectangle(Brushes.White, null, new Rect(x - 5, RulerH - 8, 10, 8), 3, 3);
     }
@@ -497,6 +586,7 @@ public sealed class EditTimeline : FrameworkElement
             RenderContent();
         }
         _drag = Drag.Seek;
+        _seekF = f;
         Seek?.Invoke(f, false);
     }
 
@@ -512,7 +602,10 @@ public sealed class EditTimeline : FrameworkElement
                 Cursor = HoverCursor(p);
                 return;
             case Drag.Seek:
-                Seek?.Invoke(Math.Clamp(f, 0, Total), false);
+                f = Math.Clamp(f, 0, Total);
+                if (f == _seekF) return; // only across: up and down asks for nothing new
+                _seekF = f;
+                Seek?.Invoke(f, false);
                 return;
             case Drag.Bar:
             case Drag.BarStart:
@@ -536,7 +629,7 @@ public sealed class EditTimeline : FrameworkElement
                 _trimF = Math.Clamp(f, lo, hi);
                 double t = _drag == Drag.TrimStart ? seg.In + (_trimF - s0) : seg.Out + (_trimF - s1);
                 SegmentTrimmed?.Invoke(_trimSeg, _drag == Drag.TrimStart, t, false);
-                RenderContent();
+                RequestContent();
                 return;
         }
     }
@@ -586,6 +679,12 @@ public sealed class EditTimeline : FrameworkElement
     {
         base.OnLostMouseCapture(e);
         if (_drag is Drag.TrimStart or Drag.TrimEnd) { _drag = Drag.None; _trimSeg = -1; RenderContent(); }
+        else if (_drag == Drag.Seek)
+        {
+            // e.g. another window came up mid-drag: the playhead stays where it is and the preview goes on from there
+            _drag = Drag.None;
+            Seek?.Invoke(Math.Clamp(_seekF, 0, Total), true);
+        }
         else _drag = Drag.None;
     }
 
@@ -617,15 +716,15 @@ public sealed class EditTimeline : FrameworkElement
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) || _fit && !Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
         {
             double f = F(x);
-            double fitPps = (ActualWidth - 2 * Side) / Total;
+            double fitPps = (ActualWidth - 2 * Side) / ViewLength;
             _pps = Math.Clamp(_pps * Math.Pow(1.0016, e.Delta), fitPps, 400);
             _fit = _pps <= fitPps * 1.0001;
-            _scroll = _fit ? 0 : Math.Clamp(f - (x - Side) / _pps, 0, Math.Max(0, Total - (ActualWidth - 2 * Side) / _pps));
+            _scroll = _fit ? 0 : Math.Clamp(f + _lead - (x - Side) / _pps, 0, Math.Max(0, ViewLength - (ActualWidth - 2 * Side) / _pps));
         }
         else
         {
             double visible = (ActualWidth - 2 * Side) / _pps;
-            _scroll = Math.Clamp(_scroll - e.Delta / 120.0 * visible * 0.15, 0, Math.Max(0, Total - visible));
+            _scroll = Math.Clamp(_scroll - e.Delta / 120.0 * visible * 0.15, 0, Math.Max(0, ViewLength - visible));
         }
         RenderContent();
         RenderHead();

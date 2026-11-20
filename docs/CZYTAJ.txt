@@ -14,8 +14,11 @@ możesz ją przeciągnąć na pasek, żeby była zawsze widoczna). Startuje sama
 SKRÓTY
   Ctrl+Shift+4   zrzut: przeciągnij, żeby zaznaczyć kawałek; kliknij okno, żeby złapać całe okno;
                  kliknij pusty pulpit, żeby złapać cały monitor
-  Po zaznaczeniu:  Ctrl+C / Enter = kopiuj i zapisz,  E = edytor (strzałki, tekst, zamazywanie, kadr 16:9, 4K…),
+  Po zaznaczeniu:  Ctrl+C / Enter = kopiuj i zapisz,  E = edytor (strzałki, napisy z emotkami, zamazywanie, kadr 16:9, 4K…),
                    Ctrl+S = zapisz jako,  Esc = anuluj,  strzałki = przesuń zaznaczenie
+                   Ctrl+C+C (C dwa razy, z Ctrl) = dołóż zrzut do schowka (do 10 naraz, Ctrl+V wkleja wszystkie)
+                   T = skopiuj tekst z zaznaczenia (OCR), kod QR w zaznaczeniu = przycisk z linkiem
+  Ctrl+Shift+Backspace   wyczyść schowek (np. po Ctrl+C+C)
   W Ustawieniach ustawisz dowolny skrót: kombinację, jeden klawisz (np. End) albo boczny przycisk myszy (Mysz 4 / Mysz 5).
 
 Zrzuty zapisują się w folderze Obrazy\LinearFrame i trafiają do schowka.
@@ -34,7 +37,7 @@ ODTWARZACZ
   Spacja — pauza, ←/→ — 5 s, F — pełny ekran, Ctrl+C — kopiuj klatkę, E albo nożyczki na pasku — edytor wideo:
     Podziel (S) i Usuń — wycinasz dowolnie wiele fragmentów; Połącz — doklejasz kolejny film;
     Tekst (T) — napisy czcionką TikToka (obrys / tło / bez), kolory, rozmiar, przeciąganie po filmie;
-    Emotki — galeria emotek z iPhone'a (pobierana raz, przy pierwszym otwarciu);
+      buźka obok napisu — galeria emotek z iPhone'a (pobierana raz), ostatnio używane i wyszukiwarka;
     Baner — Twój baner (film z przezroczystością, np. .mov) w miejscu znacznika: film staje 0,7 s po jego wejściu i rusza 0,4 s przed końcem;
     Format — 9:16, 1:1, 4:5, 16:9, dopasuj / wypełnij, powiększenie, tło rozmyte albo czarne, rozdzielczość.
     Potem „Zapisz jako nowy klip” albo „Zastąp oryginał” (oryginał trafia do Kosza). Samo cięcie = bez utraty jakości,
@@ -44,13 +47,19 @@ ZDJĘCIA
   Zdjęcia i obrazy (JPG, PNG, HEIC, WebP…) otwarte w LinearFrame pokazują się w przeglądarce: kółko myszy powiększa,
   przeciąganie przesuwa, dwuklik = cały obraz / rzeczywiste piksele, ←/→ = poprzednie / następne zdjęcie z folderu,
   Ctrl+C = kopiuj, E albo „Edytuj” = edytor adnotacji.
+  Tekst na żywo: tekst na zdjęciu zaznaczasz myszką i kopiujesz (Ctrl+C), przycisk z tekstem kopiuje wszystko,
+  kod QR na zdjęciu dostaje przycisk z linkiem. Zdjęcia (etykiety, kartki pod kątem, pionowe numery) czyta PaddleOCR
+  razem z OCR Windows.
+  Edytor zdjęć: narzędzie Tekst (T) to te same napisy co w edytorze wideo (TikTok Sans, obrys/tło, kolory, emotki);
+  róg napisu zmienia rozmiar, a linijki zostają takie, jak je napisałeś. Ctrl+kółko powiększa tam, gdzie jest kursor.
 
 AKTUALIZACJE
   LinearFrame sam sprawdza nowe wersje na GitHubie i instaluje je po cichu, gdy z niego nie korzystasz.
   Wyłączysz to w Ustawieniach → Aktualizacje.
 
 FOLDER „engine”
-  libmpv-2.dll (silnik odtwarzania) i ffmpeg.exe (edycja wideo) — nie usuwaj go.
+  libmpv-2.dll (silnik odtwarzania), ffmpeg.exe (edycja wideo), onnxruntime.dll z modelami PP-OCRv5 (czytanie tekstu
+  na zdjęciach) i biblioteki Visual C++, których potrzebuje — nie usuwaj go.
 
 ODINSTALOWANIE
   W Ustawieniach wyłącz „Uruchamiaj razem z Windows” (a w „Zrzuty HD” kliknij „Usuń sterownik”, jeśli go instalowałeś), zakończ aplikację

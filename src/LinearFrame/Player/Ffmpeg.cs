@@ -62,7 +62,7 @@ internal static class Ffmpeg
         try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { /* exited already */ }
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(timeoutMs);
-        var errTask = p.StandardError.ReadToEndAsync(timeout.Token);
+        p.StandardError.ReadToEndAsync(timeout.Token).Forget(); // (read so the pipe never fills up)
         using var ms = new MemoryStream();
         try
         {
@@ -90,8 +90,15 @@ internal static class Ffmpeg
         catch { return null; }
     }
 
+    // Starting ffmpeg.exe takes Windows a moment (tens to hundreds of ms for a 100 MB program) - and an "async" method
+    // runs on its caller's thread up to its first wait. Called from a window, that moment froze the window (a song's
+    // player started two of them before it could show itself). So each of these begins on a worker thread.
+
     /// <summary>One video frame near <paramref name="t"/> (keyframe-fast), scaled to the given height.</summary>
-    public static async Task<BitmapSource?> Frame(string file, double t, int height, CancellationToken ct)
+    public static Task<BitmapSource?> Frame(string file, double t, int height, CancellationToken ct) =>
+        Task.Run(() => FrameCore(file, t, height, ct), ct);
+
+    private static async Task<BitmapSource?> FrameCore(string file, double t, int height, CancellationToken ct)
     {
         var args = new List<string>
         {
@@ -104,7 +111,10 @@ internal static class Ffmpeg
         return Decode(await RunForBytes(args, ct, 10000));
     }
 
-    public static async Task<BitmapSource?> CoverArt(string file, CancellationToken ct)
+    public static Task<BitmapSource?> CoverArt(string file, CancellationToken ct) =>
+        Task.Run(() => CoverArtCore(file, ct), ct);
+
+    private static async Task<BitmapSource?> CoverArtCore(string file, CancellationToken ct)
     {
         var args = new List<string>
         {
@@ -115,33 +125,137 @@ internal static class Ffmpeg
         return Decode(await RunForBytes(args, ct, 8000));
     }
 
-    /// <summary>Peak envelope of the audio, <paramref name="bins"/> values in 0..1.</summary>
-    public static async Task<float[]?> Waveform(string file, int bins, double duration, CancellationToken ct)
+    /// <summary>
+    /// Peak envelope of the audio, <paramref name="bins"/> values in 0..1. Decoded at 8 kHz, the band voices and nearly
+    /// all music live in (at the 200-2000 Hz used before, the resampler's low-pass kept little more than the bass and
+    /// a long voice recording came out flat), each channel on its own (a mono mix cancels channels out of phase),
+    /// and read as a stream: an hour-long file is ~4 s of decoding and no buffer at all.
+    /// </summary>
+    public static Task<float[]?> Waveform(string file, int bins, double duration, CancellationToken ct) =>
+        Task.Run(() => WaveformCore(file, bins, duration, ct), ct);
+
+    private static async Task<float[]?> WaveformCore(string file, int bins, double duration, CancellationToken ct)
     {
-        int rate = duration > 1800 ? 200 : duration > 600 ? 800 : 2000;
+        if (!Available || bins <= 0) return null;
+        string key = WaveKey(file);
+        lock (WaveCache)
+        {
+            // the editor opened on the song that is playing: its sound has just been read
+            int hit = WaveCache.FindIndex(c => c.Key == key);
+            if (hit >= 0 && WaveCache[hit].Fine.Count >= bins) return Envelope(WaveCache[hit].Fine, bins);
+        }
+        const int Rate = 8000;
+        // fine peaks while the sound comes (at least 100 a second, twice the bins), folded into the bins at the end
+        // when the real length is known
+        double perSec = Math.Max(100, duration > 0 ? 2.0 * bins / duration : 100);
+        var acc = new PeakAccumulator(Math.Max(1, (int)(Rate / perSec)), duration > 0 ? (int)Math.Min(2_000_000, duration * perSec) + 16 : 4096);
         var args = new List<string>
         {
             "-hide_banner", "-loglevel", "error", "-nostdin", "-i", file,
-            "-vn", "-sn", "-ac", "1", "-ar", rate.ToString(CultureInfo.InvariantCulture),
+            "-vn", "-sn", "-dn", "-ac", "2", "-ar", Rate.ToString(CultureInfo.InvariantCulture),
             "-f", "s16le", "-c:a", "pcm_s16le", "pipe:1",
         };
-        var bytes = await RunForBytes(args, ct, 60000);
-        if (bytes == null || bytes.Length < 4) return null;
-        int n = bytes.Length / 2;
-        var peaks = new float[bins];
-        for (int b = 0; b < bins; b++)
+        using var p = Process.Start(Start(args));
+        if (p == null) return null;
+        try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { /* exited already */ }
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(60 + Math.Max(0, duration) / 20));
+        p.StandardError.ReadToEndAsync(timeout.Token).Forget(); // (read so the pipe never fills up)
+        var buf = new byte[1 << 16];
+        int carry = 0;
+        try
         {
-            int s0 = (int)((long)n * b / bins), s1 = (int)((long)n * (b + 1) / bins);
-            int max = 0;
-            for (int i = s0; i < s1; i++)
+            var output = p.StandardOutput.BaseStream;
+            int n;
+            while ((n = await output.ReadAsync(buf.AsMemory(carry), timeout.Token)) > 0)
             {
-                int v = Math.Abs((short)(bytes[i * 2] | bytes[i * 2 + 1] << 8));
-                if (v > max) max = v;
+                n += carry;
+                int whole = n / 4 * 4; // L+R, 16 bits each
+                acc.Add(buf, whole);
+                carry = n - whole;
+                if (carry > 0) Buffer.BlockCopy(buf, whole, buf, 0, carry);
             }
-            peaks[b] = max / 32768f;
+            await p.WaitForExitAsync(timeout.Token);
         }
-        float top = peaks.Max();
-        if (top > 0) for (int i = 0; i < bins; i++) peaks[i] = MathF.Sqrt(peaks[i] / top);
+        catch (OperationCanceledException)
+        {
+            try { p.Kill(true); } catch { /* gone */ }
+            return null;
+        }
+        // a damaged end still leaves the rest to show
+        if (acc.Fine.Count == 0) return null;
+        var fine = acc.Finish();
+        lock (WaveCache)
+        {
+            WaveCache.RemoveAll(c => c.Key == key);
+            WaveCache.Insert(0, (key, fine));
+            if (WaveCache.Count > 2) WaveCache.RemoveAt(WaveCache.Count - 1);
+        }
+        return Envelope(fine, bins);
+    }
+
+    // the fine peaks of the last two files read (an hour of sound is 1.6 MB of them)
+    private static readonly List<(string Key, List<float> Fine)> WaveCache = new();
+
+    private static string WaveKey(string file)
+    {
+        try
+        {
+            var fi = new FileInfo(file);
+            return $"{fi.FullName}|{fi.Length}|{fi.LastWriteTimeUtc.Ticks}";
+        }
+        catch { return file; }
+    }
+
+    /// <summary>Loudest sample of every few, the louder channel of the two.</summary>
+    private sealed class PeakAccumulator(int step, int capacity)
+    {
+        public readonly List<float> Fine = new(capacity);
+        private int _inStep, _peak;
+
+        public void Add(byte[] pcm, int length)
+        {
+            var s = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(pcm.AsSpan(0, length));
+            for (int i = 0; i + 1 < s.Length; i += 2)
+            {
+                int a = Math.Abs((int)s[i]), b = Math.Abs((int)s[i + 1]);
+                if (b > a) a = b;
+                if (a > _peak) _peak = a;
+                if (++_inStep == step) { Fine.Add(_peak / 32768f); _peak = 0; _inStep = 0; }
+            }
+        }
+
+        public List<float> Finish()
+        {
+            if (_inStep > 0) { Fine.Add(_peak / 32768f); _inStep = 0; _peak = 0; }
+            return Fine;
+        }
+    }
+
+    /// <summary>
+    /// Fine peaks folded into <paramref name="bins"/> (each the loudest of its slice), scaled to the loud parts of the
+    /// file - the 99th percentile, not the single loudest click, which flattened everything else - with the quiet
+    /// parts lifted (square root) the way a level meter reads.
+    /// </summary>
+    internal static float[] Envelope(IReadOnlyList<float> fine, int bins)
+    {
+        var peaks = new float[Math.Max(1, bins)];
+        int n = fine.Count;
+        if (n == 0) return peaks;
+        for (int b = 0; b < peaks.Length; b++)
+        {
+            int s0 = (int)((long)n * b / peaks.Length), s1 = Math.Max(s0 + 1, (int)((long)n * (b + 1) / peaks.Length));
+            float m = 0;
+            for (int i = s0; i < s1 && i < n; i++) if (fine[i] > m) m = fine[i];
+            peaks[b] = m;
+        }
+        var sorted = (float[])peaks.Clone();
+        Array.Sort(sorted);
+        float top = sorted[^1];
+        if (top <= 0) return peaks; // silence
+        // at least a quarter of the loudest: a file that is mostly silence doesn't blow its noise up to full bars
+        float scale = Math.Max(sorted[(int)((sorted.Length - 1) * 0.99)], top * 0.25f);
+        for (int i = 0; i < peaks.Length; i++) peaks[i] = MathF.Sqrt(Math.Min(1f, peaks[i] / scale));
         return peaks;
     }
 
@@ -190,14 +304,17 @@ internal static class Ffmpeg
     /// Keyframe times of the first video track, and whether its frames are stored out of display order (B-frames) -
     /// stream-copied pieces of such a video don't join frame-exactly.
     /// </summary>
-    public static async Task<(double[]? Keyframes, bool Reordered)> KeyframeScan(string file, CancellationToken ct)
+    public static Task<(double[]? Keyframes, bool Reordered)> KeyframeScan(string file, CancellationToken ct) =>
+        Task.Run(() => KeyframeScanCore(file, ct), ct);
+
+    private static async Task<(double[]? Keyframes, bool Reordered)> KeyframeScanCore(string file, CancellationToken ct)
     {
         if (!Available) return (null, true);
         var args = new List<string> { "-hide_banner", "-nostdin", "-loglevel", "error", "-i", file, "-map", "0:v:0", "-c", "copy", "-f", "framecrc", "pipe:1" };
         using var p = Process.Start(Start(args));
         if (p == null) return (null, true);
         try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { /* exited already */ }
-        var errTask = p.StandardError.ReadToEndAsync(ct);
+        p.StandardError.ReadToEndAsync(ct).Forget(); // (read so the pipe never fills up)
         var list = new List<double>();
         double tbNum = 1, tbDen = 1000;
         long maxPts = long.MinValue;
@@ -397,9 +514,13 @@ internal static class Ffmpeg
         var err = new StringBuilder();
         var errTask = Task.Run(async () =>
         {
-            string? line;
-            while ((line = await p.StandardError.ReadLineAsync()) != null)
-                if (err.Length < 4000) err.AppendLine(line);
+            try
+            {
+                string? line;
+                while ((line = await p.StandardError.ReadLineAsync()) != null)
+                    if (err.Length < 4000) err.AppendLine(line);
+            }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException) { /* killed: nothing more to read */ }
         });
         try
         {

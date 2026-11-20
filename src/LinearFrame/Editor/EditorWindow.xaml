@@ -4,6 +4,7 @@
         xmlns:core="clr-namespace:LinearFrame.Core"
         xmlns:ui="clr-namespace:LinearFrame.UI"
         xmlns:ed="clr-namespace:LinearFrame.Editor"
+        xmlns:ped="clr-namespace:LinearFrame.Player.Edit"
         Title="LinearFrame" Width="1180" Height="760" MinWidth="1060" MinHeight="560"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource Brush.CanvasBg}"
@@ -12,7 +13,7 @@
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display">
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="52" ResizeBorderThickness="6" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"/>
+        <WindowChrome CaptionHeight="52" ResizeBorderThickness="8" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"/>
     </WindowChrome.WindowChrome>
 
     <Grid TextElement.Foreground="{DynamicResource Brush.Text}">
@@ -53,9 +54,6 @@
                     <RadioButton x:Name="ToolPen" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Pen" ToolTip="{core:Loc Editor.Pen}" Checked="Tool_Checked"><ui:IconView Icon="pen"/></RadioButton>
                     <RadioButton x:Name="ToolHighlighter" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Highlighter" ToolTip="{core:Loc Editor.Highlighter}" Checked="Tool_Checked"><ui:IconView Icon="highlighter"/></RadioButton>
                     <RadioButton x:Name="ToolArrow" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Arrow" ToolTip="{core:Loc Editor.Arrow}" Checked="Tool_Checked"><ui:IconView Icon="arrow"/></RadioButton>
-                    <RadioButton x:Name="ToolLine" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Line" ToolTip="{core:Loc Editor.Line}" Checked="Tool_Checked"><ui:IconView Icon="line"/></RadioButton>
-                    <RadioButton x:Name="ToolRect" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Rect" ToolTip="{core:Loc Editor.Rect}" Checked="Tool_Checked"><ui:IconView Icon="rect"/></RadioButton>
-                    <RadioButton x:Name="ToolEllipse" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Ellipse" ToolTip="{core:Loc Editor.Ellipse}" Checked="Tool_Checked"><ui:IconView Icon="ellipse"/></RadioButton>
                     <RadioButton x:Name="ToolText" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Text" ToolTip="{core:Loc Editor.Text}" Checked="Tool_Checked"><ui:IconView Icon="text"/></RadioButton>
                     <RadioButton x:Name="ToolCounter" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Counter" ToolTip="{core:Loc Editor.Counter}" Checked="Tool_Checked"><ui:IconView Icon="counter"/></RadioButton>
                     <RadioButton x:Name="ToolPixelate" Style="{StaticResource Tool.Radio}" GroupName="tool" Tag="Pixelate" ToolTip="{core:Loc Editor.Pixelate}" Checked="Tool_Checked"><ui:IconView Icon="pixelate"/></RadioButton>
@@ -95,7 +93,7 @@
                             <TextBlock Text="{core:Loc Editor.Copy}" Margin="6,0,0,0"/>
                         </StackPanel>
                     </Button>
-                    <Button Style="{StaticResource Btn.Primary}" Content="{core:Loc Editor.Done}" Click="Done_Click" Padding="16,6"/>
+                    <Button x:Name="DoneBtn" Style="{StaticResource Btn.Primary}" Content="{core:Loc Editor.Done}" Click="Done_Click" Padding="16,6"/>
                 </StackPanel>
 
                 <ui:CaptionButtons Grid.Column="3"/>
@@ -153,15 +151,23 @@
         <!-- ================= Canvas ================= -->
         <ScrollViewer x:Name="Scroller" Grid.Row="2" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Focusable="False">
             <Grid x:Name="CanvasHost" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="48">
-                <Border x:Name="CanvasShadow" Background="#FF808080" Width="{Binding ActualWidth, ElementName=View}" Height="{Binding ActualHeight, ElementName=View}">
+                <!-- the shadow fills the cell the picture sizes (a binding to the picture's size kept a zoomed-out photo
+                     at its full size: a huge grey area with the photo small in its corner) -->
+                <Border x:Name="CanvasShadow" Background="#FF808080">
                     <Border.Effect>
                         <DropShadowEffect BlurRadius="24" ShadowDepth="4" Opacity="0.3" Direction="270"/>
                     </Border.Effect>
                 </Border>
                 <ed:MarkupView x:Name="View"/>
-                <Canvas x:Name="TextLayer"/>
             </Grid>
         </ScrollViewer>
+
+        <!-- ================= Caption tool (the video editor's own): floats over the picture while a caption is chosen ================= -->
+        <Border x:Name="CaptionBar" Grid.Row="2" Visibility="Collapsed" VerticalAlignment="Bottom" HorizontalAlignment="Center"
+                Margin="16,0,16,18" Padding="14,6,14,4" CornerRadius="14" Background="#F21C1C1E" MinWidth="620" MaxWidth="760">
+            <Border.Effect><DropShadowEffect BlurRadius="22" ShadowDepth="4" Opacity="0.35" Direction="270"/></Border.Effect>
+            <ped:CaptionPanel x:Name="Caption"/>
+        </Border>
 
         <!-- ================= Status bar ================= -->
         <Border Grid.Row="3" Background="{DynamicResource Brush.ToolbarBg}" BorderBrush="{DynamicResource Brush.Separator}" BorderThickness="0,1,0,0">

@@ -65,13 +65,18 @@ public sealed class EditCanvasLayer : FrameworkElement
         _p = p;
         _canvas = canvas;
         _f = f;
-        var shown = p.Overlays.Where(o => o is not BannerOverlay && (p.VisibleAt(o, f) || ReferenceEquals(o, selected))).Select(o => o.Id).ToHashSet();
-        bool changed = force || layoutChanged || !ReferenceEquals(selected, _sel) || formatMode != _format || !shown.SetEquals(_shown);
+        // called on every frame while playing: no new sets, only a redraw when what is on screen changes
+        _shownNow.Clear();
+        foreach (var o in p.Overlays)
+            if (o is not BannerOverlay && (p.VisibleAt(o, f) || ReferenceEquals(o, selected))) _shownNow.Add(o.Id);
+        bool changed = force || layoutChanged || !ReferenceEquals(selected, _sel) || formatMode != _format || !_shownNow.SetEquals(_shown);
         _sel = selected;
         _format = formatMode;
-        _shown = shown;
+        (_shown, _shownNow) = (_shownNow, _shown);
         if (changed) InvalidateVisual();
     }
+
+    private HashSet<Guid> _shownNow = new();
 
     private double Ppd => VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
@@ -210,8 +215,9 @@ public sealed class EditCanvasLayer : FrameworkElement
                 _startX = _p.Canvas.CX;
                 _startY = _p.Canvas.CY;
                 CaptureMouse();
+                e.Handled = true;
             }
-            e.Handled = true;
+            // otherwise the press goes on to the player: dragging the picture moves the window
         }
     }
 

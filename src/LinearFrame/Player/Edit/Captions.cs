@@ -8,9 +8,27 @@ using LinearFrame.Core;
 namespace LinearFrame.Player.Edit;
 
 /// <summary>
+/// What a caption is - the video editor's captions and the picture editor's are the same thing, drawn by the same code.
+/// </summary>
+public interface ICaption
+{
+    string Text { get; }
+    CaptionStyle Style { get; }
+    Color Color { get; }
+    /// <summary>Font size as a part of the canvas height.</summary>
+    double Size { get; }
+    /// <summary>
+    /// How wide its lines may get, in font sizes - set while the text is typed (lines break at the canvas's caption
+    /// width), kept when only the size changes: enlarging a caption scales it, it never breaks a line in two.
+    /// 0 = the canvas's caption width at the current size.
+    /// </summary>
+    double WrapEm { get; }
+}
+
+/// <summary>
 /// Captions the way TikTok's text editor draws them: TikTok Sans "Classic" (weight 600), centred lines balanced in length,
 /// a black outline, or a background plate per line whose joins curve inwards, emoji as Apple images. The same code draws
-/// the preview and the finished video, so what you see is what you get.
+/// the video editor's preview, the finished video and the picture editor's captions, so what you see is what you get.
 /// </summary>
 public static class Captions
 {
@@ -73,13 +91,22 @@ public static class Captions
         internal List<Line> Lines = new();
         public double Size, Ascent, Advance, Stroke, PadX, PadY;
         public Rect Bounds;
-        internal TextOverlay Source = null!;
+        internal ICaption Source = null!;
         internal double PixelsPerDip = 1;
     }
 
     public static double MaxWidth(double cw, double ch) => cw * (cw <= ch ? 0.80 : 0.66);
 
-    public static Layout Arrange(TextOverlay t, double cw, double ch, double pixelsPerDip = 1)
+    /// <summary>A new caption's size on a canvas (a part of its height): readable, a bit bigger on wide pictures.</summary>
+    public static double DefaultSize(double cw, double ch) => 0.036 * (cw > ch ? 1.45 : 1);
+
+    /// <summary>The line width (in font sizes) that fills the canvas's caption width at <paramref name="size"/> - <see cref="ICaption.WrapEm"/> while typing.</summary>
+    public static double WrapEmFor(double size, double cw, double ch) => MaxWidth(cw, ch) / Math.Max(4, size * ch);
+
+    // lines are broken at this size and then drawn at the caption's own: the breaks never depend on the size
+    private const double WrapSize = 100;
+
+    public static Layout Arrange(ICaption t, double cw, double ch, double pixelsPerDip = 1)
     {
         double size = Math.Max(4, t.Size * ch);
         bool plate = t.Style == CaptionStyle.Fill;
@@ -95,12 +122,13 @@ public static class Captions
             PadY = plate ? 0.08 * size : 0,
             PixelsPerDip = pixelsPerDip,
         };
-        double inner = Math.Max(40, MaxWidth(cw, ch) - 2 * l.PadX - 2 * l.Stroke);
+        double em = t.WrapEm > 0 ? t.WrapEm : WrapEmFor(t.Size, cw, ch);
+        double inner = Math.Max(1, (em - 2 * (plate ? 0.30 : 0) - 2 * (t.Style == CaptionStyle.Stroke ? 0.10 : 0)) * WrapSize);
         foreach (var para in (string.IsNullOrEmpty(t.Text) ? " " : t.Text).Replace("\r\n", "\n").Split('\n'))
         {
             var words = para.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (words.Length == 0) { l.Lines.Add(new Line(new List<Run>(), 0)); continue; }
-            foreach (var text in Wrap(words, size, inner, pixelsPerDip)) l.Lines.Add(MakeLine(text, size, pixelsPerDip));
+            foreach (var text in Wrap(words, WrapSize, inner, pixelsPerDip)) l.Lines.Add(MakeLine(text, size, pixelsPerDip));
         }
         double w = l.Lines.Max(x => x.Width) + 2 * l.PadX + 2 * l.Stroke;
         double h = l.Advance * l.Lines.Count + 2 * l.PadY + 2 * l.Stroke;
@@ -327,7 +355,7 @@ public static class Captions
     }
 
     /// <summary>A caption as a picture for the finished video (canvas pixels; the picture's centre is the caption's centre).</summary>
-    public static BitmapSource Render(TextOverlay t, double cw, double ch, out Rect bounds)
+    public static BitmapSource Render(ICaption t, double cw, double ch, out Rect bounds)
     {
         var l = Arrange(t, cw, ch);
         bounds = l.Bounds;

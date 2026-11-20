@@ -17,26 +17,30 @@
 
         <!-- top bar -->
         <Grid x:Name="TopBar" VerticalAlignment="Top" Height="64">
-            <Grid.Background>
-                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                    <GradientStop Color="#99000000" Offset="0"/>
-                    <GradientStop Color="#00000000" Offset="1"/>
-                </LinearGradientBrush>
-            </Grid.Background>
-            <TextBlock x:Name="TitleText" Margin="18,14,260,0" VerticalAlignment="Top" HorizontalAlignment="Left" FontSize="13.5" FontWeight="SemiBold"
+            <!-- The shade behind the title and the window buttons. This layer is a window of its own, lying on the player:
+                 its corners are square, the player's are round (Windows 11) - so the shade is given the player's round
+                 top corners itself (RoundTop), or it shows as two dark square corners sticking out of the window. -->
+            <Border x:Name="TopShade">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                        <GradientStop Color="#99000000" Offset="0"/>
+                        <GradientStop Color="#00000000" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+            </Border>
+            <TextBlock x:Name="TitleText" Margin="18,14,140,0" VerticalAlignment="Top" HorizontalAlignment="Left" FontSize="13.5" FontWeight="SemiBold"
                        TextTrimming="CharacterEllipsis" Opacity="0.95"/>
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
-                <StackPanel x:Name="WindowButtons" Orientation="Horizontal" VerticalAlignment="Top">
-                    <Button Style="{StaticResource Hud.IconButton}" Width="46" Height="38" Click="Min_Click">
-                        <ui:IconView Icon="minimize" Width="16" Height="16" StrokeWidth="1.5"/>
-                    </Button>
-                    <Button Style="{StaticResource Hud.IconButton}" Width="46" Height="38" Click="Max_Click">
-                        <ui:IconView x:Name="MaxIcon" Icon="maximize" Width="16" Height="16" StrokeWidth="1.5"/>
-                    </Button>
-                    <Button x:Name="CloseBtn" Style="{StaticResource Hud.IconButton}" Width="46" Height="38" Click="Close_Click">
-                        <ui:IconView Icon="close" Width="16" Height="16" StrokeWidth="1.5"/>
-                    </Button>
-                </StackPanel>
+            <!-- on the line of the title, set in from the corner (the buttons themselves still reach the window's edge) -->
+            <StackPanel x:Name="WindowButtons" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" Height="46">
+                <Button Style="{StaticResource Hud.Caption}" Click="Min_Click">
+                    <ui:IconView Icon="minimize" Width="16" Height="16" StrokeWidth="1.5"/>
+                </Button>
+                <Button Style="{StaticResource Hud.Caption}" Click="Max_Click">
+                    <ui:IconView x:Name="MaxIcon" Icon="maximize" Width="16" Height="16" StrokeWidth="1.5"/>
+                </Button>
+                <Button x:Name="CloseBtn" Style="{StaticResource Hud.CaptionClose}" Click="Close_Click">
+                    <ui:IconView Icon="close" Width="16" Height="16" StrokeWidth="1.5"/>
+                </Button>
             </StackPanel>
         </Grid>
 
@@ -46,9 +50,9 @@
             <ui:IconView x:Name="FlashIcon" Icon="play" Width="32" Height="32"/>
         </Border>
 
-        <!-- QuickTime-like control pill -->
-        <Border x:Name="Controls" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="16,0,16,18"
-                Width="580" CornerRadius="16" Background="#D91F1F22" BorderBrush="#30FFFFFF" BorderThickness="1" Padding="14,6,14,10">
+        <!-- QuickTime-like control pill: as wide as the window allows (at most 600), its buttons fitted to it in code -->
+        <Border x:Name="Controls" VerticalAlignment="Bottom" HorizontalAlignment="Stretch" Margin="16,0,16,18"
+                MaxWidth="600" CornerRadius="16" Background="#D91F1F22" BorderBrush="#30FFFFFF" BorderThickness="1" Padding="14,6,14,10">
             <Border.Effect>
                 <DropShadowEffect BlurRadius="22" ShadowDepth="3" Opacity="0.35" Direction="270"/>
             </Border.Effect>
@@ -58,24 +62,30 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
                 <Grid>
+                    <!-- two equal sides: the play button stays in the very middle -->
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
                         <Button x:Name="MuteBtn" Style="{StaticResource Hud.IconButton}" Click="Mute_Click">
                             <ui:IconView x:Name="VolIcon" Icon="volume"/>
                         </Button>
                         <pl:ThinSlider x:Name="VolumeSlider" Width="84" VerticalAlignment="Center" Margin="2,0,0,0"/>
                     </StackPanel>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                        <Button Style="{StaticResource Hud.IconButton}" Click="Back_Click" ToolTip="−10 s">
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Button x:Name="BackBtn" Style="{StaticResource Hud.IconButton}" Click="Back_Click" ToolTip="−10 s">
                             <ui:IconView Icon="back" Width="20" Height="20"/>
                         </Button>
                         <Button x:Name="PlayBtn" Style="{StaticResource Hud.IconButton}" Width="48" Height="42" Margin="8,0" Click="Play_Click">
                             <ui:IconView x:Name="PlayIcon" Icon="pause" Width="26" Height="26"/>
                         </Button>
-                        <Button Style="{StaticResource Hud.IconButton}" Click="Forward_Click" ToolTip="+10 s">
+                        <Button x:Name="ForwardBtn" Style="{StaticResource Hud.IconButton}" Click="Forward_Click" ToolTip="+10 s">
                             <ui:IconView Icon="forward" Width="20" Height="20"/>
                         </Button>
                     </StackPanel>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                         <Button x:Name="EditBtn" Style="{StaticResource Hud.IconButton}" Click="Edit_Click" ToolTip="{core:Loc Player.EditTip}">
                             <ui:IconView Icon="scissors" Width="19" Height="19"/>
                         </Button>

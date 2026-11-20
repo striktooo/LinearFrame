@@ -11,7 +11,7 @@ namespace LinearFrame.Core;
 /// <summary>Hidden top-level window that receives hotkeys, tray callbacks, IPC and system broadcasts.</summary>
 internal sealed class MessageWindow : IDisposable
 {
-    public static readonly string Title = "LinearFrame.MessageWindow" + AppPaths.Instance;
+    public static string Title => Ipc.WindowTitle;
     private readonly HwndSource _source;
     private readonly List<Func<int, IntPtr, IntPtr, bool>> _handlers = new();
 
@@ -57,9 +57,11 @@ internal sealed class TrayIcon : IDisposable
     public static readonly int TaskbarCreated = (int)Native.RegisterWindowMessage("TaskbarCreated");
 
     private readonly IntPtr _hwnd;
+    private readonly object _sync = new();
     private IntPtr _icon;
     private string _tip;
-    private bool _added;
+    private volatile bool _added, _disposed;
+    private int _showing;
 
     public event Action? Click;
     public event Action<int, int>? ContextMenu;
@@ -84,19 +86,51 @@ internal sealed class TrayIcon : IDisposable
         szInfoTitle = "",
     };
 
+    /// <summary>
+    /// Puts the icon into the notification area - on a thread of its own: right after Windows starts, the taskbar can
+    /// keep a caller waiting for 10 s and then still refuse, and the UI thread must stay free for the screenshot
+    /// shortcut meanwhile. Tries again until the taskbar takes it.
+    /// </summary>
     public void Show()
     {
-        var d = Data();
-        d.uFlags = Native.NIF_MESSAGE | Native.NIF_ICON | Native.NIF_TIP | Native.NIF_SHOWTIP;
-        _added = Native.Shell_NotifyIcon(Native.NIM_ADD, ref d);
-        if (!_added)
+        if (Interlocked.Exchange(ref _showing, 1) == 1) return;
+        var t = new Thread(() =>
         {
-            // Probably already there (e.g. after an explorer hiccup) - try to update instead.
-            _added = Native.Shell_NotifyIcon(Native.NIM_MODIFY, ref d);
+            try
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                int attempts = 0;
+                while (!_disposed && attempts < 60)
+                {
+                    attempts++;
+                    if (TryAdd()) break;
+                    Thread.Sleep(attempts < 10 ? 1500 : 5000);
+                }
+                Log.Info($"Tray icon added: {_added} ({sw.ElapsedMilliseconds} ms, {attempts} attempt{(attempts == 1 ? "" : "s")})");
+            }
+            catch (Exception ex) { Log.Error("Tray icon", ex); }
+            finally { Interlocked.Exchange(ref _showing, 0); }
+        }) { IsBackground = true, Name = "tray icon" };
+        t.Start();
+    }
+
+    private bool TryAdd()
+    {
+        lock (_sync)
+        {
+            if (_disposed) return false;
+            var d = Data();
+            d.uFlags = Native.NIF_MESSAGE | Native.NIF_ICON | Native.NIF_TIP | Native.NIF_SHOWTIP;
+            // already there (e.g. the first try timed out but went through, or after an explorer hiccup): update it
+            bool ok = Native.Shell_NotifyIcon(Native.NIM_ADD, ref d) || Native.Shell_NotifyIcon(Native.NIM_MODIFY, ref d);
+            if (ok)
+            {
+                d.uVersion = Native.NOTIFYICON_VERSION_4;
+                Native.Shell_NotifyIcon(Native.NIM_SETVERSION, ref d);
+            }
+            _added = ok;
+            return ok;
         }
-        d.uVersion = Native.NOTIFYICON_VERSION_4;
-        Native.Shell_NotifyIcon(Native.NIM_SETVERSION, ref d);
-        Log.Info($"Tray icon added: {_added}");
     }
 
     public bool IsVisible => _added;
@@ -164,13 +198,17 @@ internal sealed class TrayIcon : IDisposable
 
     public void Dispose()
     {
-        if (_added)
+        lock (_sync)
         {
-            var d = Data();
-            Native.Shell_NotifyIcon(Native.NIM_DELETE, ref d);
-            _added = false;
+            _disposed = true;
+            if (_added)
+            {
+                var d = Data();
+                Native.Shell_NotifyIcon(Native.NIM_DELETE, ref d);
+                _added = false;
+            }
+            if (_icon != IntPtr.Zero) { Native.DestroyIcon(_icon); _icon = IntPtr.Zero; }
         }
-        if (_icon != IntPtr.Zero) { Native.DestroyIcon(_icon); _icon = IntPtr.Zero; }
     }
 }
 
@@ -662,6 +700,45 @@ internal static class StartMenuShortcut
     }
 }
 
+/// <summary>
+/// A second click on the button that opened a menu or a popup closes it. Windows closes a menu or a popup on any click
+/// outside it - on its own button too - and the same click then reached the button, which opened it again right away
+/// (it "blinked"). The click that closed it is remembered for a moment and the button lets it go.
+/// </summary>
+internal static class PopupToggle
+{
+    private static WeakReference<FrameworkElement>? _owner;
+    private static long _closedAt;
+
+    /// <summary>The menu / popup of <paramref name="owner"/> just closed; remembered when that happened by a click on the owner.</summary>
+    public static void Closed(FrameworkElement owner)
+    {
+        if (!UnderCursor(owner)) return;
+        _owner = new WeakReference<FrameworkElement>(owner);
+        _closedAt = Stopwatch.GetTimestamp();
+    }
+
+    /// <summary>The click being handled is the one that just closed this owner's menu / popup: don't open it again.</summary>
+    public static bool JustClosed(FrameworkElement owner)
+    {
+        if (_owner == null || !_owner.TryGetTarget(out var o) || !ReferenceEquals(o, owner)) return false;
+        _owner = null;
+        return Stopwatch.GetElapsedTime(_closedAt).TotalMilliseconds < 500;
+    }
+
+    /// <summary>Wires a WPF popup to the button that opens it (call <see cref="JustClosed"/> in the button's click).</summary>
+    public static void Attach(System.Windows.Controls.Primitives.Popup popup, FrameworkElement button) =>
+        popup.Closed += (_, _) => Closed(button);
+
+    private static bool UnderCursor(FrameworkElement e)
+    {
+        if (!e.IsVisible || PresentationSource.FromVisual(e) == null) return false;
+        Native.GetCursorPos(out var pt);
+        var p = e.PointFromScreen(new Point(pt.X, pt.Y));
+        return p.X >= 0 && p.Y >= 0 && p.X <= e.ActualWidth && p.Y <= e.ActualHeight;
+    }
+}
+
 /// <summary>Win32 popup menu - native look (rounded, dark mode aware) and zero WPF overhead.</summary>
 internal sealed class NativeMenu : IDisposable
 {
@@ -718,13 +795,15 @@ internal sealed class NativeMenu : IDisposable
         Dispose();
     }
 
-    /// <summary>Shows the menu right under (or above) a WPF element.</summary>
+    /// <summary>Shows the menu right under (or above) a WPF element - the button that opened it closes it again.</summary>
     public void ShowFor(FrameworkElement anchor, bool forceDark = false, bool above = false)
     {
+        if (PopupToggle.JustClosed(anchor)) { Dispose(); return; }
         var window = Window.GetWindow(anchor);
         var hwnd = window != null ? new WindowInteropHelper(window).Handle : IntPtr.Zero;
         var p = anchor.PointToScreen(above ? new Point(0, 0) : new Point(0, anchor.ActualHeight + 4));
         Show(hwnd, (int)p.X, (int)p.Y - (above ? 4 : 0), forceDark, alignBottom: above);
+        PopupToggle.Closed(anchor);
     }
 
     public void Dispose()
@@ -770,19 +849,72 @@ internal static class ShellUtil
     }
 }
 
-/// <summary>Registers the app in "Open with" for media files (per user, no admin).</summary>
+/// <summary>
+/// Registers the app in "Open with" for media files (per user, no admin). Every format is a file type of its own
+/// ("LinearFrame.mp4"...) with its own icon - a film, a note or a picture in its colour and the format on a label - so
+/// once LinearFrame opens them, a folder shows at a glance what is what.
+/// </summary>
 internal static class FileAssociations
 {
-    private const string ProgId = "LinearFrame.Media";
+    private const string OldProgId = "LinearFrame.Media";
+    private const string StateKey = @"Software\LinearFrame";
 
-    public static void Register(IEnumerable<string> extensions)
+    private static string ProgIdOf(string ext) => "LinearFrame" + ext.ToLowerInvariant();
+
+    private static string TypeName(string ext)
+    {
+        string e = ext.TrimStart('.').ToUpperInvariant();
+        return FileTypeIcons.KindOf(ext) switch
+        {
+            FileTypeIcons.Kind.Video => L.F("Assoc.Video", e),
+            FileTypeIcons.Kind.Audio => L.F("Assoc.Audio", e),
+            FileTypeIcons.Kind.Animated => L.F("Assoc.Animated", e),
+            _ => L.F("Assoc.Image", e),
+        };
+    }
+
+    /// <summary>Registered before (by "Set as default" in Settings): icons and names are brought up to date quietly.</summary>
+    public static void RefreshIfRegistered(IEnumerable<string> extensions)
     {
         try
         {
+            using var state = Registry.CurrentUser.OpenSubKey(StateKey);
+            using var caps = Registry.CurrentUser.OpenSubKey(StateKey + @"\Capabilities");
+            if (caps == null) return;
+            string want = $"{FileTypeIcons.DesignVersion}|{AppPaths.ExePath}|{(L.IsPolish ? "pl" : "en")}";
+            if (state?.GetValue("FileTypes") as string == want) return;
+            Register(extensions);
+        }
+        catch (Exception ex) { Log.Error("File types refresh", ex); }
+    }
+
+    /// <summary>
+    /// Writes the file types (makes the icons on a thread of its own - WPF draws them - so nobody waits for it).
+    /// </summary>
+    public static Task Register(IEnumerable<string> extensions)
+    {
+        var list = extensions.ToList();
+        var done = new TaskCompletionSource();
+        var t = new Thread(() =>
+        {
+            try { RegisterCore(list); }
+            catch (Exception ex) { Log.Error("File association failed", ex); }
+            finally { done.TrySetResult(); }
+        }) { IsBackground = true, Name = "file types" };
+        t.SetApartmentState(ApartmentState.STA);
+        t.Start();
+        return done.Task;
+    }
+
+    private static void RegisterCore(List<string> extensions)
+    {
+        {
             string exe = AppPaths.ExePath;
             string cmd = $"\"{exe}\" \"%1\"";
-            using (var prog = Registry.CurrentUser.CreateSubKey($@"Software\Classes\{ProgId}"))
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            using (var prog = Registry.CurrentUser.CreateSubKey($@"Software\Classes\{OldProgId}"))
             {
+                // the type of 1.0.x (one for everything) keeps working for files that were set to it
                 prog.SetValue("", "LinearFrame media");
                 prog.SetValue("FriendlyTypeName", "LinearFrame media");
                 using (var icon = prog.CreateSubKey("DefaultIcon")) icon.SetValue("", $"\"{exe}\",0");
@@ -801,11 +933,27 @@ internal static class FileAssociations
 
             foreach (var ext in extensions)
             {
+                string progId = ProgIdOf(ext), name = TypeName(ext);
+                string icon;
+                try { icon = FileTypeIcons.Ensure(ext); }
+                catch (Exception ex) { Log.Warn($"Icon for {ext}: {ex.Message}"); icon = $"{exe},0"; }
+                using (var prog = Registry.CurrentUser.CreateSubKey($@"Software\Classes\{progId}"))
+                {
+                    prog.SetValue("", name);
+                    prog.SetValue("FriendlyTypeName", name);
+                    using (var di = prog.CreateSubKey("DefaultIcon")) di.SetValue("", icon);
+                    using (var open = prog.CreateSubKey(@"shell\open\command")) open.SetValue("", cmd);
+                }
                 using (var e = Registry.CurrentUser.CreateSubKey($@"Software\Classes\{ext}\OpenWithProgids"))
-                    e.SetValue(ProgId, Array.Empty<byte>(), RegistryValueKind.None);
+                {
+                    e.SetValue(progId, Array.Empty<byte>(), RegistryValueKind.None);
+                    if (e.GetValue(OldProgId) != null) e.DeleteValue(OldProgId, false); // LinearFrame once in "Open with"
+                }
                 supported.SetValue(ext, "");
-                capsAssoc.SetValue(ext, ProgId);
+                capsAssoc.SetValue(ext, progId);
             }
+            using (var state = Registry.CurrentUser.CreateSubKey(StateKey))
+                state.SetValue("FileTypes", $"{FileTypeIcons.DesignVersion}|{exe}|{(L.IsPolish ? "pl" : "en")}");
 
             using (var reg = Registry.CurrentUser.CreateSubKey(@"Software\RegisteredApplications"))
                 reg.SetValue("LinearFrame", @"Software\LinearFrame\Capabilities");
@@ -821,8 +969,8 @@ internal static class FileAssociations
             }
 
             Native.SHChangeNotify(Native.SHCNE_ASSOCCHANGED, 0, IntPtr.Zero, IntPtr.Zero);
+            Log.Info($"File types registered: {extensions.Count} formats with their icons ({sw.ElapsedMilliseconds} ms)");
         }
-        catch (Exception ex) { Log.Error("File association failed", ex); }
     }
 
     public static void OpenDefaultAppsSettings()
@@ -836,9 +984,12 @@ internal static class Ipc
 {
     public const int CopyDataId = 0x4C46; // 'LF'
 
+    /// <summary>The title the running copy's hidden message window is found by.</summary>
+    public static readonly string WindowTitle = "LinearFrame.MessageWindow" + AppPaths.Instance;
+
     public static bool TrySendToRunningInstance(IReadOnlyList<string> args)
     {
-        var hwnd = Native.FindWindow(null, MessageWindow.Title);
+        var hwnd = Native.FindWindow(null, WindowTitle);
         if (hwnd == IntPtr.Zero) return false;
 
         Native.GetWindowThreadProcessId(hwnd, out uint pid);
@@ -879,31 +1030,63 @@ internal static class Ipc
     }
 }
 
-/// <summary>Gives memory back to Windows after windows are closed (the app idles in the tray).</summary>
+/// <summary>
+/// Gives memory back to Windows, in two steps. The garbage of the last capture / edit / export (screen-sized bitmaps) goes
+/// a few seconds after it was made - always, also while a window is open. The memory pages of the app itself go only
+/// once LinearFrame has been left alone for a while: taking them away right after every screenshot made the next one
+/// fetch everything back first (measured in real use: the overlay came up in 72 ms instead of 43, every tenth time in
+/// over 200 ms) - and screenshots come in bursts.
+/// </summary>
 internal static class Memory
 {
-    private static DispatcherTimer? _timer;
+    /// <summary>How long nothing must have happened before the pages go back to Windows (LINEARFRAME_IDLE_SECONDS overrides it for tests).</summary>
+    internal static TimeSpan IdleAfter { get; set; } =
+        int.TryParse(Environment.GetEnvironmentVariable("LINEARFRAME_IDLE_SECONDS"), out int seconds) && seconds > 0
+            ? TimeSpan.FromSeconds(seconds) : TimeSpan.FromMinutes(10);
+
+    private static DispatcherTimer? _timer, _idle;
 
     public static void TrimSoon(int delayMs = 2500)
     {
         if (Application.Current == null) return;
-        _timer ??= new DispatcherTimer(DispatcherPriority.ApplicationIdle, Application.Current.Dispatcher);
+        if (_timer == null)
+        {
+            _timer = new DispatcherTimer(DispatcherPriority.ApplicationIdle, Application.Current.Dispatcher);
+            _timer.Tick += OnTick;
+        }
         _timer.Stop();
         _timer.Interval = TimeSpan.FromMilliseconds(delayMs);
-        _timer.Tick -= OnTick;
-        _timer.Tick += OnTick;
         _timer.Start();
+        Used();
+    }
+
+    /// <summary>LinearFrame was just used: its pages stay for another while.</summary>
+    private static void Used()
+    {
+        if (_idle == null)
+        {
+            _idle = new DispatcherTimer(DispatcherPriority.ApplicationIdle, Application.Current.Dispatcher);
+            _idle.Tick += OnIdle;
+        }
+        _idle.Stop();
+        _idle.Interval = IdleAfter;
+        _idle.Start();
     }
 
     private static void OnTick(object? sender, EventArgs e)
     {
         _timer?.Stop();
         if (Capture.CaptureSession.Current != null) { TrimSoon(3000); return; } // a capture is on screen - come back later
-        // The garbage of the last capture / edit / export (screen-sized bitmaps) is always given back, also while the
-        // main window or an editor is open. The memory pages themselves are handed back to Windows only while LinearFrame
-        // is not what you are working in (no window of ours in front, no video open) - under your hands that would
-        // cost a moment of stutter, in the background it costs nothing.
-        TrimNow(releasePages: !InUse());
+        TrimNow(releasePages: false);
+    }
+
+    private static void OnIdle(object? sender, EventArgs e)
+    {
+        // Still in use (a window of ours in front, a video open, a capture on screen): look again later - under your
+        // hands handing the pages back would cost a moment of stutter, in the background it costs nothing.
+        if (Capture.CaptureSession.Current != null || InUse()) return;
+        _idle?.Stop();
+        TrimNow(releasePages: true);
     }
 
     private static bool InUse()
@@ -924,7 +1107,9 @@ internal static class Memory
             GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, false); // ...and what those kept alive goes now
             bool ok = releasePages && Native.SetProcessWorkingSetSizeEx(Native.GetCurrentProcess(), new IntPtr(-1), new IntPtr(-1), 0);
             using var me = System.Diagnostics.Process.GetCurrentProcess();
-            Log.Info($"Trim{(releasePages ? "" : " (window open)")}: ws {before / 1048576} MB -> {Environment.WorkingSet / 1048576} MB, private {me.PrivateMemorySize64 / 1048576} MB, gc heap {GC.GetTotalMemory(false) / 1048576} MB, overlays alive {Capture.CaptureOverlayWindow.Alive}{(releasePages && !ok ? ", pages not released" : "")}");
+            // what holds memory besides the GC heap: if the private bytes ever stay high, these tell where to look
+            Log.Info($"Trim{(releasePages ? "" : " (garbage only)")}: ws {before / 1048576} MB -> {Environment.WorkingSet / 1048576} MB, private {me.PrivateMemorySize64 / 1048576} MB, gc heap {GC.GetTotalMemory(false) / 1048576} MB, overlays alive {Capture.CaptureOverlayWindow.Alive}, " +
+                     $"mpv {Player.MpvPlayer.Alive}, OCR {(Imaging.PaddleOcr.Loaded ? "loaded" : "off")}, threads {me.Threads.Count}, handles {me.HandleCount}{(releasePages && !ok ? ", pages not released" : "")}");
         }
         catch (Exception ex) { Log.Error("Trim failed", ex); }
     }

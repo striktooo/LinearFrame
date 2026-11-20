@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media.Imaging;
 using LinearFrame.Capture;
@@ -31,12 +32,18 @@ public partial class ImageViewerWindow : Window
     private bool _shown;
 
     public string? CurrentPath => _path;
+    private readonly LiveText _live;
+    private CancellationTokenSource? _liveCts;
 
     public ImageViewerWindow()
     {
         InitializeComponent();
         WindowHelper.Attach(this);
         View.ViewChanged += OnViewChanged;
+        _live = new LiveText(View, QrPills);
+        Grid.SetRow(_live, 1);
+        var grid = (Grid)View.Parent;
+        grid.Children.Insert(grid.Children.IndexOf(View) + 1, _live);
         Activated += (_, _) => ReloadIfChanged();
         SizeChanged += (_, _) => UpdateCompact();
         Closed += (_, _) =>
@@ -60,20 +67,25 @@ public partial class ImageViewerWindow : Window
         WindowHelper.BringToFront(this);
     }
 
-    /// <summary>First opening: as big as the picture at 100 %, at most ~85 % of the screen.</summary>
+    /// <summary>
+    /// First opening: the picture as big as it is (at most ~80 % of the screen), in a window never smaller than a
+    /// comfortable ~45 % of the screen - a tiny icon doesn't get a tiny window, a 50 MP photo doesn't cover everything.
+    /// </summary>
     private void SizeTo(ImageIO.ImageInfo? info)
     {
         var work = WindowHelper.WorkAreaAtCursor(out double scale);
-        double maxW = work.Width / scale * 0.86, maxH = work.Height / scale * 0.86 - 46;
-        double w = 960, h = 640;
+        double sw = work.Width / scale, sh = work.Height / scale;
+        double maxW = sw * 0.80, maxH = sh * 0.86 - 46;
+        double minW = Math.Min(maxW, Math.Max(720, sw * 0.45)), minH = Math.Min(maxH, Math.Max(460, sh * 0.48));
+        double w = minW, h = minH;
         if (info != null && info.ShownWidth > 0 && info.ShownHeight > 0)
         {
             double pw = info.ShownWidth / scale, ph = info.ShownHeight / scale;
             double k = Math.Min(1, Math.Min(maxW / pw, maxH / ph));
-            w = pw * k;
-            h = ph * k;
+            w = Math.Clamp(pw * k, minW, maxW);
+            h = Math.Clamp(ph * k, minH, maxH);
         }
-        WindowHelper.PlaceCentered(this, Math.Max(560, w), Math.Max(400, h) + 46);
+        WindowHelper.PlaceCentered(this, w, h + 46);
     }
 
     // ------------------------------------------------------------------ loading
@@ -93,9 +105,15 @@ public partial class ImageViewerWindow : Window
         return (int)(Math.Max(info.Width, info.Height) * Math.Sqrt(FullPixelsCap / (double)px));
     }
 
+    private long _shownAt = long.MinValue / 2; // when the last picture was asked for (Environment.TickCount64)
+
     private async void ShowPicture(string path, ImageIO.ImageInfo? known)
     {
         int id = ++_loadId;
+        // walking through a folder (← → held or pressed quickly): pictures that are only passed by are not read for text
+        long now = Environment.TickCount64;
+        bool flipping = now - _shownAt < 1200;
+        _shownAt = now;
         _path = path;
         _info = null;
         _full = _fullLoading = false;
@@ -133,9 +151,50 @@ public partial class ImageViewerWindow : Window
         _full = bmp.PixelWidth >= info.ShownWidth;
         View.SetPicture(bmp, info.ShownWidth, info.ShownHeight, info.HasAlpha);
         InfoText.Text = $"{info.ShownWidth} × {info.ShownHeight}";
+        ReadText(id, bmp, info, flipping);
         if (View.WantsMorePixels) LoadFull();
         Memory.TrimSoon(4000); // the previous picture's pixels go back
     }
+
+    /// <summary>
+    /// Live Text: the picture's text and QR codes are read in the background (the screen-sized copy is plenty for that);
+    /// then text can be selected right on the picture and codes get a button.
+    /// </summary>
+    private async void ReadText(int id, BitmapSource bmp, ImageIO.ImageInfo info, bool flipping)
+    {
+        _liveCts?.Cancel();
+        var cts = _liveCts = new CancellationTokenSource();
+        _live.Reset();
+        TextBtn.Visibility = Visibility.Collapsed;
+        try
+        {
+            // Reading takes every processor core for up to a second. While you flip through pictures only the one you
+            // stop on is read - the ones passed by used to be started, cancelled and thrown away one after another.
+            if (flipping) await Task.Delay(350, cts.Token);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var (text, codes) = await Task.Run(() =>
+            {
+                var px = PixelBuffer.FromBitmap(bmp);
+                var codes = QrReader.Read(px);
+                cts.Token.ThrowIfCancellationRequested();
+                var text = TextRecognizer.Recognize(px, cts.Token);
+                return (text, codes);
+            }, cts.Token);
+            if (id != _loadId || cts.IsCancellationRequested) return;
+            // the copy on screen may be smaller than the picture: positions are in the picture's own pixels
+            double k = info.ShownWidth / (double)Math.Max(1, bmp.PixelWidth);
+            Rect S(Rect r) => new(r.X * k, r.Y * k, r.Width * k, r.Height * k);
+            var scaled = text == null ? null : new OcrText(text.Lines.Select(l => new OcrLine(l.Words.Select(w => new OcrWord(w.Text, S(w.Box))).ToList())).ToList());
+            var scaledCodes = codes.Select(c => c with { Corners = c.Corners.Select(p => new Point(p.X * k, p.Y * k)).ToArray() }).ToList();
+            _live.Set(scaled, scaledCodes);
+            TextBtn.Visibility = _live.HasText ? Visibility.Visible : Visibility.Collapsed;
+            Log.Info($"Live Text: {scaled?.Lines.Count ?? 0} lines, {codes.Count} QR code(s) in {sw.ElapsedMilliseconds} ms");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Log.Warn("Live Text: " + ex.Message); }
+    }
+
+    private void Text_Click(object sender, RoutedEventArgs e) => _live.CopyAll();
 
     /// <summary>Zoomed past the screen-sized copy: decode every pixel (once per picture).</summary>
     private async void LoadFull()
@@ -298,10 +357,17 @@ public partial class ImageViewerWindow : Window
             case Key.OemMinus: case Key.Subtract: View.ZoomBy(0.8); break;
             case Key.D0: case Key.NumPad0: View.ShowWhole(); break;
             case Key.D1: case Key.NumPad1: View.ShowActualPixels(); break;
-            case Key.C when ctrl: _ = CopyAsync(); break;
+            case Key.C when ctrl:
+                // selected text first (Live Text), otherwise the picture
+                if (!_live.CopySelection()) _ = CopyAsync();
+                break;
+            case Key.A when ctrl: _live.SelectAll(); break;
             case Key.E when !ctrl: Edit(); break;
             case Key.W when ctrl: Close(); break;
-            case Key.Escape: Close(); break;
+            case Key.Escape:
+                if (_live.HasSelection) _live.Clear();
+                else Close();
+                break;
             default: handled = false; break;
         }
         if (handled) e.Handled = true;

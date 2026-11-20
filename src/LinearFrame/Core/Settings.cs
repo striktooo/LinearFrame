@@ -99,8 +99,12 @@ public sealed class AppSettings
     public HotkeyGesture RegionHotkey { get; set; } = new(ModifierKeys.Control | ModifierKeys.Shift, Key.D4);
     /// <summary>Optional second shortcut for the same thing - e.g. End on the keyboard and the side button on the mouse.</summary>
     public HotkeyGesture RegionHotkey2 { get; set; } = new();
+    /// <summary>Empties the clipboard - e.g. the screenshots collected with Ctrl+C+C. Empty = no shortcut.</summary>
+    public HotkeyGesture ClearClipboardHotkey { get; set; } = new(ModifierKeys.Control | ModifierKeys.Shift, Key.Back);
 
     public bool CopyToClipboard { get; set; } = true;
+    /// <summary>Ctrl+C+C in the capture overlay adds the screenshot to the ones already in the clipboard (up to 10).</summary>
+    public bool MultiCopy { get; set; } = true;
     public bool AutoSave { get; set; } = true;
     public string? SaveFolder { get; set; }
     public ImageFormatKind ImageFormat { get; set; } = ImageFormatKind.Png;
@@ -136,12 +140,12 @@ public sealed class AppSettings
 
     [JsonIgnore] public string ScreenshotFolder => string.IsNullOrWhiteSpace(SaveFolder) ? AppPaths.DefaultScreenshotDir : SaveFolder!;
 
-    internal static readonly JsonSerializerOptions Json = new()
-    {
-        WriteIndented = true,
-        Converters = { new JsonStringEnumConverter() },
-        DefaultIgnoreCondition = JsonIgnoreCondition.Never,
-    };
+    /// <summary>
+    /// How the settings file is written and read. The code for it is generated when LinearFrame is built
+    /// (<see cref="SettingsJson"/>): working it out at every start by looking through the classes took over a tenth of
+    /// a second - before the screenshot shortcut could be set up.
+    /// </summary>
+    internal static JsonSerializerOptions Json => SettingsJson.Default.Options;
 
     public static AppSettings Load()
     {
@@ -149,11 +153,12 @@ public sealed class AppSettings
         {
             if (File.Exists(AppPaths.SettingsFile))
             {
-                var s = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(AppPaths.SettingsFile), Json);
+                var s = JsonSerializer.Deserialize(File.ReadAllText(AppPaths.SettingsFile), SettingsJson.Default.AppSettings);
                 if (s != null)
                 {
                     s.RegionHotkey ??= new(ModifierKeys.Control | ModifierKeys.Shift, Key.D4);
                     s.RegionHotkey2 ??= new();
+                    s.ClearClipboardHotkey ??= new();
                     s.RecentMedia ??= new();
                     s.RecentEmoji ??= new();
                     return s;
@@ -169,7 +174,7 @@ public sealed class AppSettings
         try
         {
             var tmp = AppPaths.SettingsFile + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(this, Json));
+            File.WriteAllText(tmp, JsonSerializer.Serialize(this, SettingsJson.Default.AppSettings));
             File.Move(tmp, AppPaths.SettingsFile, true);
         }
         catch (Exception ex) { Log.Error("Settings save failed", ex); }
@@ -181,4 +186,11 @@ public sealed class AppSettings
         RecentMedia.Insert(0, path);
         if (RecentMedia.Count > 12) RecentMedia.RemoveRange(12, RecentMedia.Count - 12);
     }
+}
+
+/// <summary>The settings file's reading and writing code, generated at build time (same format as before: indented, enums by name).</summary>
+[JsonSourceGenerationOptions(WriteIndented = true, UseStringEnumConverter = true, DefaultIgnoreCondition = JsonIgnoreCondition.Never)]
+[JsonSerializable(typeof(AppSettings))]
+internal sealed partial class SettingsJson : JsonSerializerContext
+{
 }

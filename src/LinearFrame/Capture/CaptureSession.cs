@@ -234,10 +234,13 @@ public sealed class CaptureSession
         Memory.TrimSoon();
     }
 
+    private ClipTicket? _ticket;
+
     public void Finish(CaptureOverlayWindow source, Int32Rect localPx, CaptureAction action)
     {
         if (_finished) return;
         _finished = true;
+        var ticket = action == CaptureAction.Copy ? _ticket : null;
         var shot = _overlays.First(x => x.Overlay == source).Shot;
         var r = ImageOps.Intersect(localPx, new Int32Rect(0, 0, shot.PixelWidth, shot.PixelHeight));
         if (r.Width <= 0 || r.Height <= 0)
@@ -253,7 +256,7 @@ public sealed class CaptureSession
         {
             CloseOverlays();
             Current = null;
-            Deliver(_s, crop, Size, action, monitor, null);
+            Deliver(_s, crop, Size, action, monitor, null, ticket);
             return;
         }
 
@@ -269,9 +272,38 @@ public sealed class CaptureSession
                 var result = t.IsCompletedSuccessfully ? t.Result : new HdResult(null, 1, HdFailure.Error, t.Exception?.GetBaseException().Message ?? "");
                 CloseOverlays();
                 Current = null;
-                Deliver(_s, result.Image ?? crop, Size, action, monitor, result);
+                Deliver(_s, result.Image ?? crop, Size, action, monitor, result, ticket);
             }));
         });
+    }
+
+    /// <summary>The text in the selection goes to the clipboard (read by Windows' own OCR), the screenshot is dropped.</summary>
+    public async void CopyText(CaptureOverlayWindow source)
+    {
+        if (_finished) return;
+        if (source.Target is not Int32Rect sel) return;
+        var shot = _overlays.First(x => x.Overlay == source).Shot;
+        var r = ImageOps.Intersect(sel, new Int32Rect(0, 0, shot.PixelWidth, shot.PixelHeight));
+        if (r.Width < 4 || r.Height < 4) return;
+        var crop = new CroppedBitmap(shot, r);
+        crop.Freeze();
+        source.ShowBusy(L.T("Capture.Reading"));
+        OcrText? text = null;
+        try { text = await Task.Run(() => TextRecognizer.Recognize(PixelBuffer.FromBitmap(crop))); }
+        catch (Exception ex) { Log.Warn("Copy text: " + ex.Message); }
+        if (_finished) return;
+        if (text == null || text.IsEmpty)
+        {
+            source.EndBusy();
+            Hud.Show(L.T(text == null ? "Capture.NoOcr" : "Capture.NoText"), "info");
+            return;
+        }
+        _finished = true;
+        CloseOverlays();
+        Current = null;
+        if (ImageIO.CopyText(text.Text)) Hud.Show(L.T("Live.Copied"), "copy");
+        Log.Info($"Copied text: {text.Lines.Count} lines, {text.Text.Length} characters");
+        Memory.TrimSoon();
     }
 
     private void CloseOverlays()
@@ -282,7 +314,7 @@ public sealed class CaptureSession
 
     // ------------------------------------------------------------------ results
 
-    private static async void Deliver(AppSettings s, PixelBuffer shot, ExportSize size, CaptureAction action, MonitorInfo monitor, HdResult? hd)
+    private static async void Deliver(AppSettings s, PixelBuffer shot, ExportSize size, CaptureAction action, MonitorInfo monitor, HdResult? hd, ClipTicket? ticket = null)
     {
         try
         {
@@ -336,6 +368,8 @@ public sealed class CaptureSession
                 return;
             }
 
+            // (the small picture for the preview is made beside the encoding, so it costs no time)
+            var preview = s.ShowThumbnail ? Task.Run(() => CaptureToast.Preview(output)) : null;
             byte[] pngBytes = await Task.Run(() => ImageIO.EncodePng(output));
             string? saved = null;
             if (s.AutoSave)
@@ -344,9 +378,21 @@ public sealed class CaptureSession
                 saved = await Task.Run(() => ImageIO.SaveScreenshotBytes(fileBytes, s));
                 App.Instance?.NotifyScreenshotsChanged();
             }
-            if (s.CopyToClipboard) ImageIO.CopyToClipboard(output, pngBytes);
+            if (s.CopyToClipboard)
+            {
+                if (ticket != null) ClipboardStack.Delivered(ticket, output, pngBytes, saved);
+                else
+                {
+                    ImageIO.CopyToClipboard(output, pngBytes);
+                    ClipboardStack.Single(saved);
+                }
+            }
 
-            if (s.ShowThumbnail) CaptureToast.Show(output, saved, monitor, badge, badgeGood);
+            if (s.ShowThumbnail)
+            {
+                CaptureToast.Show(output, saved, monitor, badge, badgeGood, preview == null ? null : await preview);
+                CaptureToast.FindCode(output); // a QR code in the screenshot: its link on the preview
+            }
             else if (hd is { Image: null }) Hud.Show(badge!, "info");
             else Hud.Show(s.CopyToClipboard ? L.T("Capture.Copied") : L.T("Capture.Saved"), s.CopyToClipboard ? "copy" : "check");
         }
@@ -371,7 +417,12 @@ public sealed class CaptureSession
                 e.Handled = true;
                 break;
             case Key.Enter:
+                source.Commit(CaptureAction.Copy);
+                e.Handled = true;
+                break;
             case Key.C when mods.HasFlag(ModifierKeys.Control):
+                // Ctrl+C+C (C once more, Ctrl still held) adds this capture to the ones in the clipboard
+                if (_s.MultiCopy && _s.CopyToClipboard && !e.IsRepeat) _ticket = ClipboardStack.Begin();
                 source.Commit(CaptureAction.Copy);
                 e.Handled = true;
                 break;
@@ -381,6 +432,10 @@ public sealed class CaptureSession
                 break;
             case Key.E when mods == ModifierKeys.None:
                 source.Commit(CaptureAction.Edit);
+                e.Handled = true;
+                break;
+            case Key.T when mods == ModifierKeys.None:
+                CopyText(source);
                 e.Handled = true;
                 break;
             case Key.H when mods == ModifierKeys.None:

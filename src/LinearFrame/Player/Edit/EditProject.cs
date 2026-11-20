@@ -44,11 +44,13 @@ public abstract class EditOverlay
     public abstract EditOverlay Clone();
 }
 
-public sealed class TextOverlay : EditOverlay
+public sealed class TextOverlay : EditOverlay, ICaption
 {
     public string Text { get; set; } = "";
     public CaptionStyle Style { get; set; } = CaptionStyle.Stroke;
     public Color Color { get; set; } = Colors.White;
+    /// <inheritdoc/>
+    public double WrapEm { get; set; }
 
     public override EditOverlay Clone() => (TextOverlay)MemberwiseClone();
 }
@@ -287,7 +289,10 @@ public sealed class EditProject
     public bool VisibleAt(EditOverlay o, double f)
     {
         var (a, b) = Span(o);
-        return f >= a - 1e-6 && f < b - 1e-6 && b - a > 1e-3;
+        if (b - a <= 1e-3) return false;
+        // standing on the very end shows the last frame, and the saved video has the overlay on it (EditExport)
+        bool atEnd = f >= FinalLength - 1e-6 && b >= FinalLength - 1e-6;
+        return f >= a - 1e-6 && (f < b - 1e-6 || atEnd);
     }
 
     /// <summary>The finished video as stretches of clips and frozen frames, in order.</summary>

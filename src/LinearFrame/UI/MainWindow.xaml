@@ -11,7 +11,7 @@
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display">
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="44" ResizeBorderThickness="6" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"/>
+        <WindowChrome CaptionHeight="44" ResizeBorderThickness="8" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"/>
     </WindowChrome.WindowChrome>
 
     <Grid TextElement.Foreground="{DynamicResource Brush.Text}">
@@ -60,7 +60,7 @@
 
         <!-- ================= Content ================= -->
         <Grid Grid.Column="1">
-            <ui:CaptionButtons Panel.ZIndex="10"/>
+            <ui:CaptionButtons Panel.ZIndex="10" VerticalAlignment="Top" Height="46"/>
 
             <!-- ===== Screenshots ===== -->
             <Grid x:Name="ScreensPage" Margin="32,50,22,0">
@@ -204,6 +204,14 @@
                                 </StackPanel>
                                 <ui:HotkeyBox x:Name="RegionHotkey2Box" AllowClear="True" HorizontalAlignment="Right" VerticalAlignment="Center"/>
                             </Grid>
+                            <Border Style="{StaticResource Card.Separator}"/>
+                            <Grid Style="{StaticResource Card.Row}">
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <ui:IconView Icon="trash" Width="17" Height="17" Foreground="{DynamicResource Brush.Accent}"/>
+                                    <TextBlock Text="{core:Loc Settings.ClearClipboardHotkey}" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <ui:HotkeyBox x:Name="ClearClipHotkeyBox" AllowClear="True" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </Grid>
                         </StackPanel>
                     </Border>
                     <TextBlock Text="{core:Loc Settings.HotkeyHint}" Style="{StaticResource Text.Caption}" TextWrapping="Wrap" TextTrimming="None" Margin="4,7,0,0"/>
@@ -267,6 +275,14 @@
                             <Grid Style="{StaticResource Card.Row}">
                                 <TextBlock Text="{core:Loc Settings.Clipboard}" VerticalAlignment="Center"/>
                                 <CheckBox x:Name="ClipboardToggle" Style="{StaticResource Toggle.Switch}" HorizontalAlignment="Right"/>
+                            </Grid>
+                            <Border Style="{StaticResource Card.Separator}"/>
+                            <Grid Style="{StaticResource Card.Row}">
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,70,0">
+                                    <TextBlock Text="{core:Loc Settings.MultiCopy}"/>
+                                    <TextBlock Text="{core:Loc Settings.MultiCopyHint}" Style="{StaticResource Text.Caption}" TextWrapping="Wrap" TextTrimming="None" Margin="0,2,0,0"/>
+                                </StackPanel>
+                                <CheckBox x:Name="MultiCopyToggle" Style="{StaticResource Toggle.Switch}" HorizontalAlignment="Right"/>
                             </Grid>
                             <Border Style="{StaticResource Card.Separator}"/>
                             <Grid Style="{StaticResource Card.Row}">

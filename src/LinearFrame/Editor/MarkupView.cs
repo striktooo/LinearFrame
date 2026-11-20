@@ -2,6 +2,8 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
+using LinearFrame.Core;
+using LinearFrame.Player.Edit;
 
 namespace LinearFrame.Editor;
 
@@ -47,7 +49,10 @@ public sealed class MarkupView : FrameworkElement
     public event Action? ZoomChanged;
     public event Action? CropFrameChanged;
     public event Action<Color>? ColorPicked;
-    public event Action<TextAnnotation, bool>? TextEditRequested;
+    /// <summary>A caption to edit in the caption tool: a new one (not in the document yet) or one clicked.</summary>
+    public event Action<CaptionAnnotation, bool>? CaptionEditRequested;
+    /// <summary>The selected caption's size changed by dragging its corner (the caption tool's slider follows).</summary>
+    public event Action<CaptionAnnotation>? CaptionResized;
 
     public MarkupView()
     {
@@ -245,6 +250,7 @@ public sealed class MarkupView : FrameworkElement
     {
         LineAnnotation l => new[] { l.A, l.B },
         ShapeAnnotation s => new[] { s.Rect.TopLeft, s.Rect.TopRight, s.Rect.BottomRight, s.Rect.BottomLeft },
+        CaptionAnnotation c => new[] { c.Bounds.TopLeft, c.Bounds.TopRight, c.Bounds.BottomRight, c.Bounds.BottomLeft },
         _ => Array.Empty<Point>(),
     };
 
@@ -479,10 +485,10 @@ public sealed class MarkupView : FrameworkElement
                 else
                 {
                     var hit = HitAnnotation(p);
-                    if (hit is TextAnnotation ta && clickCount == 2)
+                    if (hit is CaptionAnnotation ca && clickCount == 2)
                     {
-                        Select(null);
-                        TextEditRequested?.Invoke(ta, false);
+                        Select(ca);
+                        CaptionEditRequested?.Invoke(ca, false);
                         return true;
                     }
                     Select(hit);
@@ -519,14 +525,34 @@ public sealed class MarkupView : FrameworkElement
                 break;
             case ToolKind.Text:
             {
-                var existing = HitAnnotation(p) as TextAnnotation;
-                if (existing != null) TextEditRequested?.Invoke(existing, false);
-                else
+                // a caption's corner resizes it, the caption itself moves (and edits) it, anywhere else starts a new one
+                _handle = Selected is CaptionAnnotation ? HitSelectionHandle(vp) : -1;
+                if (_handle >= 0)
                 {
-                    var t = new TextAnnotation { Color = CurrentColor, Width = CurrentWidth };
-                    t.Position = new Point(p.X, p.Y - t.FontSize * 0.6);
-                    TextEditRequested?.Invoke(t, true);
+                    _resizeOrig = Selected!.Clone();
+                    _pressed = true;
+                    Grab();
+                    return true;
                 }
+                if (HitAnnotation(p) is CaptionAnnotation existing)
+                {
+                    Select(existing);
+                    CaptionEditRequested?.Invoke(existing, false);
+                    _pressed = true;
+                    Grab();
+                    return true;
+                }
+                double size = Captions.DefaultSize(Doc.Width, Doc.Height);
+                CaptionEditRequested?.Invoke(new CaptionAnnotation
+                {
+                    Center = p,
+                    Text = L.T("Edit.Placeholder"),
+                    Color = Colors.White,
+                    Size = size,
+                    WrapEm = Captions.WrapEmFor(size, Doc.Width, Doc.Height),
+                    CanvasWidth = Doc.Width,
+                    CanvasHeight = Doc.Height,
+                }, true);
                 return true;
             }
             case ToolKind.Counter:
@@ -592,7 +618,7 @@ public sealed class MarkupView : FrameworkElement
             }
         }
 
-        if (Tool == ToolKind.Select && Selected != null)
+        if (Selected != null && (Tool == ToolKind.Select || Tool == ToolKind.Text && Selected is CaptionAnnotation))
         {
             if (!_movedSinceCheckpoint && (p - _pressImg).Length * ViewScale > 2)
             {
@@ -654,6 +680,15 @@ public sealed class MarkupView : FrameworkElement
                 };
                 s.Rect = new Rect(anchor, p);
                 s.Mosaic = null;
+                break;
+            }
+            case CaptionAnnotation c when _resizeOrig is CaptionAnnotation o:
+            {
+                // the corner follows the cursor, the caption grows or shrinks around its centre - its lines stay as typed
+                double from = (SelectionHandles(o)[handle] - o.Center).Length;
+                if (from < 1) break;
+                c.Size = Math.Clamp(o.Size * (p - o.Center).Length / from, 0.008, 0.5);
+                CaptionResized?.Invoke(c);
                 break;
             }
         }
@@ -730,7 +765,13 @@ public sealed class MarkupView : FrameworkElement
             else Cursor = HitAnnotation(p) != null ? Cursors.Hand : Cursors.Arrow;
             return;
         }
-        Cursor = Tool == ToolKind.Text ? Cursors.IBeam : Cursors.Cross;
+        if (Tool == ToolKind.Text)
+        {
+            if (Selected is CaptionAnnotation && HitSelectionHandle(vp) >= 0) Cursor = Cursors.SizeAll;
+            else Cursor = HitAnnotation(p) is CaptionAnnotation ? Cursors.Hand : Cursors.IBeam;
+            return;
+        }
+        Cursor = Cursors.Cross;
     }
 
     protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)

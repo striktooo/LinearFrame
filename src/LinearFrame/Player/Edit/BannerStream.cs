@@ -136,7 +136,7 @@ internal sealed class BannerStream : IDisposable
                 if (gen != _generation) { Kill(p); return; }
                 _proc = p;
             }
-            _ = p.StandardError.ReadToEndAsync();
+            p.StandardError.ReadToEndAsync().Forget();
             var stream = p.StandardOutput.BaseStream;
             int index = start;
             while (true)

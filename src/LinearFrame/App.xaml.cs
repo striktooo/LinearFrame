@@ -41,7 +41,7 @@ public partial class App : Application
         }
 
         // Developer commands (no single-instance lock, no tray)
-        if (args.Length > 0 && args[0] is "--selftest" or "--make-icon" or "--render-ui" or "--marketing" or "--compose")
+        if (Program.IsStandaloneCommand(args))
         {
             Settings = AppSettings.Load();
             L.Init(args.Contains("--en") ? "en" : Settings.Language);
@@ -51,15 +51,11 @@ public partial class App : Application
             return;
         }
 
-        _mutex = new Mutex(true, @"Local\LinearFrame.SingleInstance" + AppPaths.Instance, out bool created);
+        // (a second start normally never gets here - Program.Main hands it over; this is two copies starting at once)
+        _mutex = new Mutex(true, SingleInstance.LockName, out bool created);
         if (!created)
         {
-            bool sent = false;
-            for (int i = 0; i < 10 && !sent; i++)
-            {
-                sent = Ipc.TrySendToRunningInstance(args);
-                if (!sent) Thread.Sleep(200);
-            }
+            SingleInstance.HandOver(args);
             _mutex.Dispose();
             _mutex = null;
             Shutdown(0);
@@ -73,8 +69,10 @@ public partial class App : Application
         TaskScheduler.UnobservedTaskException += (_, ev) => { Log.Error("Unobserved task", ev.Exception); ev.SetObserved(); };
 
         Settings = AppSettings.Load();
+        StartupTrace.Mark("settings");
         L.Init(Settings.Language);
         Theme.Init(this);
+        StartupTrace.Mark("theme");
         RaisePriorityIfLowered();
         long uptimeS = Environment.TickCount64 / 1000;
         Log.Info($"Start {AppPaths.ExePath} args=[{string.Join(" ", args)}], Windows up {uptimeS / 60}:{uptimeS % 60:00}");
@@ -83,20 +81,27 @@ public partial class App : Application
         _msg.AddHandler(OnMessage);
         Native.TrySetMenuMode(1, _msg.Handle);
         _hotkeys = new HotkeyManager(_msg.Handle);
+        StartupTrace.Mark("message window");
+        // The shortcut comes first: right after Windows starts, the taskbar can keep the tray icon waiting for ~10 s,
+        // and a screenshot shortcut that only starts working after that feels like it needs ten presses.
+        RegisterHotkeys(showErrors: true, startup: true);
+        StartupTrace.Mark("shortcuts");
+        LogShortcutReady(uptimeS);
         CreateTray();
-        RegisterHotkeys(showErrors: true);
         StartUpdates(args);
 
         if (AppPaths.RegistersWithWindows && Settings.RunAtStartup) After(TimeSpan.FromSeconds(6), CheckAutostart);
         if (AppPaths.RegistersWithWindows) StartMenuShortcut.Ensure(Settings);
+        // file icons of an earlier version (or of another place on disk) are brought up to date in the background
+        if (AppPaths.RegistersWithWindows) After(TimeSpan.FromSeconds(20), () => FileAssociations.RefreshIfRegistered(Player.MediaFormats.AssociationList));
 
         // The virtual HD screen is tidied away first (that changes the display set-up), then the capture overlays are
         // warmed up on every monitor. Right after Windows has started, graphics drivers and screens keep settling for a
         // few minutes - the warm-up is repeated then, so the first screenshot never waits for that.
         After(TimeSpan.FromMilliseconds(1200), () => RefreshHd(tidy: true));
-        After(TimeSpan.FromMilliseconds(2500), () => Warmup("start"));
+        WarmupIn("start", 2500);
         if (uptimeS < 10 * 60)
-            foreach (int s in new[] { 30, 90, 240 }) After(TimeSpan.FromSeconds(s), () => Warmup("after Windows start"));
+            foreach (int s in new[] { 30, 90, 240 }) After(TimeSpan.FromSeconds(s), () => WarmupIn("after Windows start", 0));
 
         bool trayStart = args.Contains("--tray");
         HandleArgs(args.Where(a => a != "--tray").ToArray(), startup: true, trayStart: trayStart);
@@ -157,7 +162,7 @@ public partial class App : Application
         if (msg == WM_DISPLAYCHANGE)
         {
             Dispatcher.InvokeAsync(() => RefreshHd(), DispatcherPriority.Background);
-            Dispatcher.InvokeAsync(() => WarmupSoon("display change"), DispatcherPriority.Background);
+            Dispatcher.InvokeAsync(OnDisplayChanged, DispatcherPriority.Background);
         }
         if (msg == WM_POWERBROADCAST && wParam.ToInt64() is PBT_APMRESUMEAUTOMATIC or PBT_APMRESUMESUSPEND
             && Environment.TickCount64 - _lastResume > 20000) // Windows sends both after waking up
@@ -166,8 +171,8 @@ public partial class App : Application
             // back from sleep: drivers and screens come back over a while, like after a restart
             Dispatcher.InvokeAsync(() =>
             {
-                After(TimeSpan.FromSeconds(5), () => Warmup("after sleep"));
-                After(TimeSpan.FromSeconds(60), () => Warmup("after sleep"));
+                WarmupIn("after sleep", 5000);
+                After(TimeSpan.FromSeconds(60), () => WarmupIn("after sleep", 0));
             });
         }
         return false;
@@ -178,7 +183,9 @@ public partial class App : Application
     // ------------------------------------------------------------------ start-up helpers
 
     private const int WM_POWERBROADCAST = 0x0218, PBT_APMRESUMESUSPEND = 0x0007, PBT_APMRESUMEAUTOMATIC = 0x0012;
-    private DispatcherTimer? _displayWarm;
+    private DispatcherTimer? _warmTimer;
+    private string? _warmWhy;   // a warm-up is wanted (and why); null = none
+    private int _warmWaits;     // how many times the wanted one found a game or a capture in front
     private long _lastWarmup = long.MinValue / 2;
 
     /// <summary>Runs <paramref name="action"/> once, after <paramref name="delay"/>, on the UI thread.</summary>
@@ -189,33 +196,52 @@ public partial class App : Application
         t.Start();
     }
 
-    /// <summary>Warms the capture overlays up - unless a capture is on screen or a game/video is full screen (then later).</summary>
-    private void Warmup(string why, int attempt = 0)
+    /// <summary>
+    /// Asks for the capture overlays to be warmed up in <paramref name="delayMs"/>. There is only ever one warm-up
+    /// waiting: asking again moves it (several display changes in a row end in a single warm-up after the last one;
+    /// a game that switches the screen mode every time it is left or entered no longer piles them up).
+    /// </summary>
+    private void WarmupIn(string why, int delayMs)
     {
+        _warmWhy = why;
+        _warmWaits = 0;
+        if (_warmTimer == null)
+        {
+            _warmTimer = new DispatcherTimer();
+            _warmTimer.Tick += (_, _) => WarmupTick();
+        }
+        _warmTimer.Stop();
+        _warmTimer.Interval = TimeSpan.FromMilliseconds(Math.Max(1, delayMs));
+        _warmTimer.Start();
+    }
+
+    private void WarmupTick()
+    {
+        _warmTimer?.Stop();
+        if (_warmWhy is not string why) return;
         if (CaptureSession.Current != null || WindowHelper.FullScreenAppInFront())
         {
-            if (attempt < 20) After(TimeSpan.FromSeconds(30), () => Warmup(why, attempt + 1));
+            // A game or a film in front (or a capture on screen): later. Soon while Windows is still starting (the first
+            // screenshot then must not be the one that wakes the graphics up), otherwise a look every half a minute -
+            // a look costs nothing, a warm-up under a running game would take its frames.
+            if (_warmWaits++ == 0) Log.Info($"Warm-up ({why}) waits: {(CaptureSession.Current != null ? "a capture is on screen" : "a full-screen window is in front")}");
+            bool early = Environment.TickCount64 < 5 * 60 * 1000 && _warmWaits < 24;
+            _warmTimer!.Interval = TimeSpan.FromSeconds(early ? 5 : 30);
+            _warmTimer.Start();
             return;
         }
+        _warmWhy = null;
         _lastWarmup = Environment.TickCount64;
         CaptureSession.Prewarm(Settings, why);
     }
 
-    /// <summary>After a display change (several arrive in a row): one warm-up a few seconds after the last one.</summary>
-    private void WarmupSoon(string why)
+    /// <summary>The screens changed (a mode, a monitor, scaling): WPF sets its graphics up anew - do that before the next capture.</summary>
+    private void OnDisplayChanged()
     {
-        if (Environment.TickCount64 - _lastWarmup < 15000 || CaptureSession.Current != null) return; // (an HD capture switches the virtual screen on and off)
-        if (_displayWarm == null)
-        {
-            _displayWarm = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
-            _displayWarm.Tick += (_, _) => { _displayWarm.Stop(); Warmup(_displayWarmWhy); };
-        }
-        _displayWarmWhy = why;
-        _displayWarm.Stop();
-        _displayWarm.Start();
+        // (an HD capture switches the virtual screen on and off; and right after a warm-up there is nothing to add)
+        if (Environment.TickCount64 - _lastWarmup < 15000 || CaptureSession.Current != null) return;
+        WarmupIn("display change", 4000);
     }
-
-    private string _displayWarmWhy = "";
 
     /// <summary>A scheduled task starts programs "below normal" unless told otherwise - LinearFrame should never lag behind.</summary>
     private static void RaisePriorityIfLowered()
@@ -381,7 +407,9 @@ public partial class App : Application
 
     // ------------------------------------------------------------------ hotkeys
 
-    public void RegisterHotkeys(bool showErrors)
+    private int _hotkeyRetries;
+
+    public void RegisterHotkeys(bool showErrors, bool startup = false)
     {
         if (_hotkeys == null) return;
         _hotkeys.UnregisterAll();
@@ -389,9 +417,26 @@ public partial class App : Application
         if (!_hotkeys.Register(Settings.RegionHotkey, () => StartRegionCapture())) failed.Add(Settings.RegionHotkey.ToString());
         if (!Settings.RegionHotkey2.SameAs(Settings.RegionHotkey)
             && !_hotkeys.Register(Settings.RegionHotkey2, () => StartRegionCapture())) failed.Add(Settings.RegionHotkey2.ToString());
+        var clear = Settings.ClearClipboardHotkey;
+        if (!clear.SameAs(Settings.RegionHotkey) && !clear.SameAs(Settings.RegionHotkey2)
+            && !_hotkeys.Register(clear, ClipboardStack.Clear)) failed.Add(clear.ToString());
         _tray?.SetTip(L.F("Tray.Tip", ShortcutText));
+        if (failed.Count > 0 && startup && _hotkeyRetries < 20)
+        {
+            // while Windows is starting another program may still hold the key for a moment: quietly try again
+            _hotkeyRetries++;
+            After(TimeSpan.FromSeconds(_hotkeyRetries < 10 ? 1 : 5), () => RegisterHotkeys(showErrors: _hotkeyRetries >= 20, startup: true));
+            return;
+        }
         if (failed.Count > 0 && showErrors)
             _tray?.ShowInfo("LinearFrame", L.F("Hotkey.Failed", string.Join(", ", failed)));
+    }
+
+    /// <summary>How long after the start of the process the screenshot shortcut works (the log tells boot problems apart).</summary>
+    private static void LogShortcutReady(long uptimeS)
+    {
+        var (ms, steps) = StartupTrace.Summary();
+        Log.Info($"Shortcut ready {ms:0} ms after the process started (Windows up {uptimeS} s; {steps} ms)");
     }
 
     /// <summary>"End" or "End / Mouse 5" - how the capture shortcut(s) read in texts.</summary>
@@ -453,6 +498,7 @@ public partial class App : Application
     {
         if (_player == null)
         {
+            MpvNative.Preload(); // (loads beside the window being built)
             _player = new PlayerWindow();
             _player.Closed += (_, _) => { _player = null; Memory.TrimSoon(3000); };
         }

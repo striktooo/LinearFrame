@@ -24,10 +24,22 @@ public partial class PlayerOverlay : Window
     private Point _pressPos;
     private Point _lastMove;
     private bool _waveDrag;
-    private System.Windows.Media.Brush? _topShade;
 
     public bool ControlsVisible => _visible;
     public IntPtr Handle => _hwnd;
+
+    /// <summary>
+    /// Comes into being out of sight (with a new player window, which shows itself only once it is complete). On its
+    /// own this layer used to appear for a moment wherever Windows puts a new window - controls and all, somewhere on
+    /// the screen - before it was moved over the video.
+    /// </summary>
+    public bool StartCloaked { get; init; }
+
+    /// <summary>The player window shows itself: so does its control layer.</summary>
+    public void Uncloak()
+    {
+        if (_hwnd != IntPtr.Zero && !AppPaths.Ghost) Native.SetCloak(_hwnd, false);
+    }
     public event Action? ControlsVisibilityChanged;
 
     // This window is a transient visual layer over the video; keyboard control lives in the player window.
@@ -44,7 +56,6 @@ public partial class PlayerOverlay : Window
     {
         InitializeComponent();
         _player = player;
-        _topShade = TopBar.Background;
         _hideTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2600) };
         _hideTimer.Tick += (_, _) =>
         {
@@ -55,6 +66,7 @@ public partial class PlayerOverlay : Window
 
         Scrubber.ValueChanging += v => _player.SeekFraction(v, exact: false);
         Scrubber.ValueCommitted += v => _player.SeekFraction(v, exact: true);
+        Controls.SizeChanged += (_, _) => FitControls();
         VolumeSlider.ValueChanging += v => _player.SetVolume(v * 100);
         VolumeSlider.ValueCommitted += v => _player.SetVolume(v * 100, save: true);
 
@@ -62,6 +74,7 @@ public partial class PlayerOverlay : Window
         {
             _hwnd = new WindowInteropHelper(this).Handle;
             Native.AddExStyle(_hwnd, Native.WS_EX_NOACTIVATE | Native.WS_EX_TOOLWINDOW);
+            if (StartCloaked || AppPaths.Ghost) Native.SetCloak(_hwnd, true);
             HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
         };
 
@@ -98,7 +111,8 @@ public partial class PlayerOverlay : Window
 
     // ------------------------------------------------------------------ native
 
-    private const int ResizeBorder = 6;
+    private const int ResizeBorder = 8;
+    private const double TopZone = 80; // pressing this close to the top and pulling down undoes full screen
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
@@ -130,6 +144,23 @@ public partial class PlayerOverlay : Window
                 };
                 if (code != 0) { handled = true; return new IntPtr(code); }
                 break;
+            }
+            case Native.WM_SETCURSOR:
+            {
+                // the edges resize the player: show it (WPF would put its own arrow there)
+                int ht = Native.LoWord(lParam);
+                int cursor = ht switch
+                {
+                    Native.HTLEFT or Native.HTRIGHT => Native.IDC_SIZEWE,
+                    Native.HTTOP or Native.HTBOTTOM => Native.IDC_SIZENS,
+                    Native.HTTOPLEFT or Native.HTBOTTOMRIGHT => Native.IDC_SIZENWSE,
+                    Native.HTTOPRIGHT or Native.HTBOTTOMLEFT => Native.IDC_SIZENESW,
+                    _ => 0,
+                };
+                if (cursor == 0) break;
+                Native.SetCursor(Native.LoadCursor(IntPtr.Zero, new IntPtr(cursor)));
+                handled = true;
+                return new IntPtr(1);
             }
             case Native.WM_NCLBUTTONDOWN:
             {
@@ -172,11 +203,26 @@ public partial class PlayerOverlay : Window
         Controls.Visibility = edit ? Visibility.Collapsed : Visibility.Visible;
         // while editing, the picture belongs to the captions: no shade over its top, only the window buttons stay
         EditLayer.Visibility = edit ? Visibility.Visible : Visibility.Collapsed;
-        TopBar.Background = edit ? null : _topShade;
+        TopShade.Visibility = edit ? Visibility.Collapsed : Visibility.Visible;
+        RoundTop(!fullscreen && !maximized);
         FullIcon.Icon = fullscreen ? "unfullscreen" : "fullscreen";
         MaxIcon.Icon = maximized ? "restore" : "maximize";
         FullBtn.Visibility = audio ? Visibility.Collapsed : Visibility.Visible;
+        FitControls();
         ShowControls();
+    }
+
+    /// <summary>Windows 11 rounds a window's corners by this much (units, as the window's own frame is).</summary>
+    internal const double WindowCorner = 8;
+
+    /// <summary>
+    /// The shade at the top follows the player's round top corners (Windows 11; a maximised or full-screen window and
+    /// Windows 10 have square ones). A touch rounder than the window itself, so nothing of it can show outside.
+    /// </summary>
+    private void RoundTop(bool round)
+    {
+        double r = round && Environment.OSVersion.Version.Build >= 22000 ? WindowCorner + 1 : 0;
+        if (TopShade.CornerRadius.TopLeft != r) TopShade.CornerRadius = new CornerRadius(r, r, 0, 0);
     }
 
     public void UpdatePlayback(double pos, double dur, bool paused, double volume, bool muted)
@@ -187,8 +233,27 @@ public partial class PlayerOverlay : Window
         RemainingText.Text = "-" + TrimBar.FormatTime(Math.Max(0, dur - pos));
         if (!VolumeSlider.IsDragging) VolumeSlider.Value = muted ? 0 : volume / 100.0;
         VolIcon.Icon = muted || volume <= 0.5 ? "mute" : "volume";
-        Controls.Width = Math.Clamp(ActualWidth - 32, 300, 600);
         if (paused) ShowControls(autoHide: false);
+    }
+
+    /// <summary>
+    /// The pill fits any window - its width follows the window at once (it used to be set only while playing, so a
+    /// paused phone video in a narrowed window showed the middle of a pill cut off at both sides). Narrow, the volume
+    /// slider goes first (the mute button and the mouse wheel stay), then the ±10 s buttons; play stays in the middle.
+    /// </summary>
+    private void FitControls()
+    {
+        double inner = Controls.ActualWidth - Controls.Padding.Left - Controls.Padding.Right - Controls.BorderThickness.Left - Controls.BorderThickness.Right;
+        if (inner <= 0) return;
+        const double Button = 36, Slider = 2 + 84, Middle = 36 + 8 + 48 + 8 + 36;
+        double right = Button * (1 + (EditBtn.Visibility == Visibility.Visible ? 1 : 0) + (FullBtn.Visibility == Visibility.Visible ? 1 : 0));
+        double side = (inner - Middle) / 2;
+        bool skips = side >= Math.Max(Button, right);
+        bool slider = skips && side >= Math.Max(Button + Slider, right);
+        var v = skips ? Visibility.Visible : Visibility.Collapsed;
+        if (BackBtn.Visibility != v) BackBtn.Visibility = ForwardBtn.Visibility = v;
+        v = slider ? Visibility.Visible : Visibility.Collapsed;
+        if (VolumeSlider.Visibility != v) VolumeSlider.Visibility = v;
     }
 
     public void Flash(bool playing)
@@ -266,10 +331,19 @@ public partial class PlayerOverlay : Window
             _player.WaveformHover(onWave ? _player.WaveformFraction(p) : null);
             Cursor = onWave ? Cursors.Hand : null;
         }
-        if (_pressed && e.LeftButton == MouseButtonState.Pressed && (p - _pressPos).Length > 5 && !_fullscreen && _player.WindowState != WindowState.Maximized)
+        if (_pressed && e.LeftButton == MouseButtonState.Pressed && (p - _pressPos).Length > 5)
         {
-            _pressed = false;
-            _player.BeginWindowDrag();
+            if (!_fullscreen && _player.WindowState != WindowState.Maximized)
+            {
+                _pressed = false;
+                _player.BeginWindowDrag();
+            }
+            else if (_pressPos.Y <= TopZone && p.Y - _pressPos.Y > 5)
+            {
+                // full screen (or maximised): the top pulled down - a normal window again, carried by the mouse
+                _pressed = false;
+                _player.DragOutOfFullscreen();
+            }
         }
     }
 
@@ -303,7 +377,7 @@ public partial class PlayerOverlay : Window
         if (e.ClickCount == 2)
         {
             _pressed = false;
-            if (!_audioMode) _player.ToggleFullscreen();
+            if (!_audioMode && !_editMode) _player.ToggleFullscreen();
             return;
         }
         _pressed = true;
@@ -325,6 +399,8 @@ public partial class PlayerOverlay : Window
         if (!_pressed) return;
         _pressed = false;
         if (IsOnControl(e)) return;
+        // while editing, a click on the picture only lets go of the selected caption (dragging it moves the window)
+        if (_editMode) return;
         // single click toggles playback (double click is fullscreen and flips it back - like the web players)
         _player.TogglePause(flash: true);
     }

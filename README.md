@@ -37,6 +37,11 @@ A floating thumbnail slides into the corner — click it to edit, drag it straig
 - Bind it to whatever suits you: a combination, **a single key** (End, F13, PrintScreen…) or **a side mouse button**
   (Mouse 4 / Mouse 5) — plus an optional second shortcut. Click the empty desktop to grab a whole monitor.
 - Pick the output size right in the toolbar: **Original, Full HD, 2K, 4K or 8K**.
+- **Ctrl + C + C** (C twice, Ctrl held) *adds* the shot to the ones already in the clipboard — up to 10 — and one Ctrl+V pastes
+  them all into a chat, a mail or a folder. A normal Ctrl+C replaces the clipboard as always; **Ctrl+Shift+Backspace** (or your
+  own shortcut) empties it.
+- **T** (or the text button) copies the **text** in the selection instead of the picture — offline, Polish letters included.
+  A **QR code** in the selection gets a button that opens its link (also on the thumbnail afterwards).
 - Multi-monitor and per-monitor-DPI aware; captures real physical pixels. Arrow keys nudge the selection pixel by pixel.
 
 ### ✨ HD captures — really rendered at up to 4×, never upscaled
@@ -57,8 +62,10 @@ and puts the window back. The frozen overlay hides all of it; your real monitor,
 ### ✏️ Markup — and frames that grow
 ![Editor](docs/images/editor.png)
 
-Arrows, lines and underlines, highlighter, pen, rectangles, ellipses, text, numbered steps and a **blur/pixelate** tool for
-anything private. Every mark stays editable (move, resize, recolour) with unlimited undo.
+Arrows, highlighter, pen, text, numbered steps and a **blur/pixelate** tool for
+anything private. Every mark stays editable (move, resize, recolour) with unlimited undo. **Text** is the video editor's caption
+tool itself: TikTok Sans with an outline, a plate or plain, TikTok's colours and the iPhone emoji gallery; drag a corner to
+resize — the lines stay as you typed them.
 
 **Crop & extend** is the trick you won't find elsewhere: drag the frame *outwards* and LinearFrame detects the background colour
 of the screenshot and fills the new space with it — seamlessly. One click gives you **16:9, 4:3, 1:1 or 9:16** with an even margin,
@@ -80,6 +87,16 @@ the wheel zooms where the cursor is, drag to look around, double-click for actua
 a screen-sized copy appears instantly and every pixel is decoded only when you zoom in. **← →** walk through the folder,
 **Edit** opens the markup editor.
 
+**Live Text**, like on an iPhone: the text in a picture is recognised in the background — the cursor turns into a text cursor over
+it, drag to select words (a double-click takes the line), **Ctrl+C** copies them, the text button copies everything. A QR code in
+the picture gets a button that opens its link. Neat handwriting is read too; scribbles may not be.
+
+Text recognition is two engines working together, fully offline: screens are read by Windows' own OCR (fast, and it knows Polish
+letters); **photos** — a parcel label, a page shot at an angle, text on a busy background, a number printed up the side of a
+barcode — go to **PaddleOCR PP-OCRv5**, which finds every line at any angle, straightens it and reads it together with Windows'
+engine; line by line the better reading wins, and Polish letters the photo model drops are put back from Windows' own spelling
+dictionary.
+
 ### ✂️ Video editor — cuts, captions, emoji, a banner, any format
 ![Video editor](docs/images/video-editor.png)
 
@@ -88,7 +105,8 @@ Click ✂️ in the controls (or press **E**) and the editor opens under the vid
 - **Split** at the playhead and **Delete** pieces — cut out as many fragments as you like. **Join** adds another video after this one.
 - **Text** — captions in TikTok's own font (TikTok Sans): white with a black outline by default, a background plate, or plain;
   TikTok's colours, any size; drag them anywhere on the video (they snap to the middle), double-click to retype.
-- **Emoji** — the real iPhone emoji gallery (Apple's artwork, downloaded once the first time you open it).
+- **Emoji** — the smiley next to the caption opens the real iPhone emoji gallery (Apple's artwork, downloaded once): recently
+  used first and a search in Polish and English ("serce", "ogień", "fire"…). A caption of just an emoji is a sticker.
 - **Banner** — puts your brand banner (a video with transparency, e.g. a ProRes 4444 .mov) at the playhead: the video keeps
   playing for 0.7 s, freezes while the banner plays and moves again 0.4 s before the banner ends. Move it on the video or on the
   timeline, resize it, **Top / Middle / Bottom**. Right-click the button to pick another banner file.
@@ -107,7 +125,7 @@ there is one (NVIDIA, AMD, Intel), frame-exact, with the banner's sound mixed in
 
 LinearFrame lives in the tray at **0 % CPU**. New versions download in the background, are verified (SHA-256) and installed
 **while you're not using the app** — no installer, no admin rights, no server: updates come straight from this repository's Releases.
-An update only downloads the app itself (about 55 MB); the video engine is fetched again only when it actually changed.
+An update only downloads the app itself (about 55 MB); the engines are fetched again only when they actually changed.
 
 ---
 
@@ -119,18 +137,19 @@ An update only downloads the app itself (about 55 MB); the video engine is fetch
 
 It starts the moment you sign in to Windows — through a small task of your own in Task Scheduler, no admin rights (programs in
 the classic "Run" list are held back by Windows for 20–30 s); switch it off in Settings. To open videos, music or pictures with it by default: *Player → Use LinearFrame for videos, music and pictures*;
-video files also get **Trim with LinearFrame** in the classic context menu.
+every format then gets its own flat icon — a blue film, a pink note, a green picture with the format on a label — so a folder
+shows at a glance what is what; video files also get **Edit with LinearFrame** in the classic context menu.
 
 ## Keyboard
 
 | Where | Keys |
 |---|---|
-| Anywhere | **Ctrl+Shift+4** capture (or your own key / mouse button) |
-| While selecting | **Ctrl+C / Enter** copy & save · **E** edit · **Ctrl+S** save as · **Esc** cancel · **arrows** nudge · right-click clears |
-| Editor | **V P H A L R O T N B** tools · **C** crop & extend · **Ctrl+Z / Ctrl+Shift+Z** · **Ctrl+C** copy · **Ctrl+S** done |
+| Anywhere | **Ctrl+Shift+4** capture (or your own key / mouse button) · **Ctrl+Shift+Backspace** empty the clipboard |
+| While selecting | **Ctrl+C / Enter** copy & save · **Ctrl+C+C** add to the clipboard · **T** copy the text · **E** edit · **Ctrl+S** save as · **Esc** cancel · **arrows** nudge · right-click clears |
+| Editor | **V P H A T N B** tools · **C** crop & extend · **Ctrl+Z / Ctrl+Shift+Z** · **Ctrl+C** copy · **Ctrl+S** done |
 | Player | **Space** pause · **← →** 5 s · **J L** 10 s · **, .** frame step · **↑ ↓** volume · **M** mute · **F** full screen · **Ctrl+C** copy frame · **E** video editor |
 | Video editor | **Space** play · **← →** one frame (**Shift** 1 s) · **S** split · **Delete** delete · **T** text · **Ctrl+Z / Ctrl+Y** · **Esc** done / leave |
-| Pictures | **← →** previous / next · **wheel** zoom · **double-click**, **0 / 1** whole picture / actual pixels · **Ctrl+C** copy · **E** edit · **Esc** close |
+| Pictures | **← →** previous / next · **wheel** zoom · **double-click**, **0 / 1** whole picture / actual pixels · **Ctrl+C** copy (the selected text first) · **Ctrl+A** select all text · **E** edit · **Esc** close |
 
 Command line: `LinearFrame.exe video.mp4` · `--trim video.mp4` · `--cut video.mp4` · `--capture` · `--settings` · `--exit`
 
@@ -139,7 +158,8 @@ Command line: `LinearFrame.exe video.mp4` · `--trim video.mp4` · `--cut video.
 ## Under the hood
 
 LinearFrame is a single C# / .NET 10 WPF app with a hand-made macOS-style theme (light & dark), talking directly to Win32,
-plus two battle-tested engines shipped next to the exe: **mpv** for playback and **FFmpeg** for editing.
+plus battle-tested engines shipped next to the exe: **mpv** for playback, **FFmpeg** for editing and **ONNX Runtime** with
+PaddleOCR's PP-OCRv5 models for reading text in photos.
 
 ```mermaid
 flowchart LR
@@ -300,7 +320,7 @@ src/LinearFrame/
 
 ## Ideas for later
 
-AI upscaling (Real-ESRGAN via DirectML) · scrolling screenshots · screen recording to MP4/GIF · OCR (copy text from a screenshot) ·
+AI upscaling (Real-ESRGAN via DirectML) · scrolling screenshots · screen recording to MP4/GIF ·
 pinning a screenshot on top of everything · code signing.
 
 ## License

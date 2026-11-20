@@ -58,28 +58,46 @@ internal static unsafe class MpvNative
     private static bool _resolverSet;
     private static IntPtr _handle;
 
+    private static readonly object LoadGate = new();
+
+    /// <summary>
+    /// Starts loading the engine (a 120 MB library) on another thread - the first player window of a session is being
+    /// put together meanwhile, and no longer waits for the library afterwards.
+    /// </summary>
+    public static void Preload()
+    {
+        if (_handle == IntPtr.Zero) Task.Run(() => TryLoad(out _));
+    }
+
     public static bool TryLoad(out string? error)
     {
         error = null;
         if (_handle != IntPtr.Zero) return true;
-        var path = AppPaths.FindEngineFile(Lib);
-        if (path == null) { error = "libmpv-2.dll not found"; return false; }
-        try
+        lock (LoadGate)
         {
-            _handle = NativeLibrary.Load(path);
-            if (!_resolverSet)
+            if (_handle != IntPtr.Zero) return true;
+            var path = AppPaths.FindEngineFile(Lib);
+            if (path == null) { error = "libmpv-2.dll not found"; return false; }
+            try
             {
-                NativeLibrary.SetDllImportResolver(Assembly.GetExecutingAssembly(), (name, _, _) =>
-                    name == Lib ? _handle : IntPtr.Zero);
-                _resolverSet = true;
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var handle = NativeLibrary.Load(path);
+                if (!_resolverSet)
+                {
+                    NativeLibrary.SetDllImportResolver(Assembly.GetExecutingAssembly(), (name, _, _) =>
+                        name == Lib ? _handle : IntPtr.Zero);
+                    _resolverSet = true;
+                }
+                _handle = handle;
+                Log.Info($"libmpv loaded in {sw.ElapsedMilliseconds} ms");
+                return true;
             }
-            return true;
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-            Log.Error("libmpv load failed", ex);
-            return false;
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                Log.Error("libmpv load failed", ex);
+                return false;
+            }
         }
     }
 
@@ -146,6 +164,8 @@ public sealed unsafe class MpvPlayer : IDisposable
     public event Action? FileLoaded;
     public event Action<int, int>? EndFile;
     public event Action? VideoReconfig;
+    /// <summary>A seek has finished: its picture is on screen (also raised when a file starts).</summary>
+    public event Action? SeekLanded;
     public event Action? TracksChanged;
     public event Action? Idle;
     /// <summary>Playback paused itself at <see cref="StopAt"/> (raised on the UI thread).</summary>
@@ -173,7 +193,7 @@ public sealed unsafe class MpvPlayer : IDisposable
             if (r < 0) Log.Info($"mpv option {name}={value} -> {r}");
         }
 
-        Opt("wid", wid.ToInt64().ToString());
+        Opt("wid", wid.ToInt64().ToString(System.Globalization.CultureInfo.InvariantCulture));
         Opt("hwdec", "auto-safe");
         Opt("keep-open", "yes");
         Opt("idle", "yes");
@@ -209,6 +229,15 @@ public sealed unsafe class MpvPlayer : IDisposable
         Opt("screenshot-tag-colorspace", "yes");
         Opt("hr-seek-framedrop", "yes");
         Opt("demuxer-max-back-bytes", "64MiB");
+        // The picture is drawn by small programs for the graphics card that are put together when a window first shows
+        // a video - every time, about 200 ms of each opening. Kept in a folder (a few dozen KB) they are just loaded.
+        try
+        {
+            var shaders = Path.Combine(AppPaths.LocalDir, "shader-cache");
+            Directory.CreateDirectory(shaders);
+            Opt("gpu-shader-cache-dir", shaders);
+        }
+        catch { /* no cache then */ }
         // developer override: LF_MPV_OPTS="vo=gpu;hwdec=no"
         foreach (var kv in (Environment.GetEnvironmentVariable("LF_MPV_OPTS") ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -234,7 +263,13 @@ public sealed unsafe class MpvPlayer : IDisposable
 
         _thread = new Thread(EventLoop) { IsBackground = true, Name = "mpv events" };
         _thread.Start();
+        Interlocked.Increment(ref _alive);
     }
+
+    private static int _alive;
+
+    /// <summary>How many mpv instances exist right now (for the memory lines in the log).</summary>
+    public static int Alive => Volatile.Read(ref _alive);
 
     private static byte[] Utf8(string s)
     {
@@ -268,11 +303,17 @@ public sealed unsafe class MpvPlayer : IDisposable
                 case MpvEventId.None:
                     continue;
                 case MpvEventId.Shutdown:
+                    LogOnce(null);
                     return;
                 case MpvEventId.PropertyChange:
                     HandleProperty(ev->ReplyUserdata, (MpvEventProperty*)ev->Data);
                     break;
                 case MpvEventId.FileLoaded:
+                    // The player goes on opening the file now (the picture, the sound device) and answers no question
+                    // until that is done - a few hundred ms. One question asked from here: this thread does the
+                    // waiting, and the window hears of the file once its own questions get their answers at once
+                    // (it used to stand still for that time).
+                    if (!_quit) _ = GetString("track-list");
                     Post(() => FileLoaded?.Invoke());
                     break;
                 case MpvEventId.EndFile:
@@ -285,16 +326,34 @@ public sealed unsafe class MpvPlayer : IDisposable
                 case MpvEventId.VideoReconfig:
                     Post(() => VideoReconfig?.Invoke());
                     break;
+                case MpvEventId.PlaybackRestart:
+                    Post(() => SeekLanded?.Invoke());
+                    break;
                 case MpvEventId.LogMessage:
                 {
                     var lm = (MpvEventLogMessage*)ev->Data;
                     var text = Marshal.PtrToStringUTF8(lm->Text)?.TrimEnd();
                     var prefix = Marshal.PtrToStringUTF8(lm->Prefix);
-                    if (!string.IsNullOrEmpty(text)) Log.Warn($"mpv[{prefix}] {text}");
+                    if (!string.IsNullOrEmpty(text)) LogOnce($"mpv[{prefix}] {text}");
                     break;
                 }
             }
         }
+        LogOnce(null);
+    }
+
+    // one odd file can say the same thing hundreds of times a second ("Invalid audio PTS"): it goes into the log once,
+    // with how many times it came
+    private string? _lastLog;
+    private int _logRepeats;
+
+    private void LogOnce(string? line)
+    {
+        if (line != null && line == _lastLog) { _logRepeats++; return; }
+        if (_logRepeats > 0) Log.Warn($"{_lastLog} (the same {_logRepeats} more times)");
+        _logRepeats = 0;
+        _lastLog = line;
+        if (line != null) Log.Warn(line);
     }
 
     private void HandleProperty(ulong id, MpvEventProperty* p)
@@ -422,9 +481,11 @@ public sealed unsafe class MpvPlayer : IDisposable
         if (_ctx == IntPtr.Zero) return;
         _quit = true;
         MpvNative.mpv_wakeup(_ctx);
-        _thread.Join(1500);
+        // (the event thread may be waiting for an answer of a player that is busy opening a file: it gets the time)
+        _thread.Join(4000);
         var ctx = _ctx;
         _ctx = IntPtr.Zero;
         MpvNative.mpv_terminate_destroy(ctx);
+        Interlocked.Decrement(ref _alive);
     }
 }

@@ -20,6 +20,9 @@ public partial class MainWindow : Window
     private FileSystemWatcher? _watcher;
     private readonly DispatcherTimer _reloadTimer;
     private CancellationTokenSource? _thumbCts;
+    // Thumbnails decoded while this window is open. A new screenshot lists the folder again - but only the new file is
+    // decoded then (all 150 used to be read from disk again, one after another, after every single capture).
+    private readonly Dictionary<string, (long Stamp, long Length, BitmapSource Picture)> _thumbs = new(StringComparer.OrdinalIgnoreCase);
     private bool _loadingSettings;
 
     public MainWindow()
@@ -66,6 +69,7 @@ public partial class MainWindow : Window
             _watcher?.Dispose();
             _thumbCts?.Cancel();
             ShotsList.Items.Clear();
+            _thumbs.Clear();
         };
     }
 
@@ -166,27 +170,43 @@ public partial class MainWindow : Window
 
         double scale = WindowHelper.DpiScale(this);
         int decodeW = (int)(200 * scale * 1.25);
+        static ImageBrush Shown(BitmapSource bmp) => new(bmp) { Stretch = Stretch.UniformToFill, AlignmentY = AlignmentY.Top };
         var cards = new List<(FileInfo file, Border thumb)>();
         foreach (var f in files)
         {
             var (card, thumb) = MakeCard(f);
             ShotsList.Items.Add(card);
-            cards.Add((f, thumb));
+            // a file that is as it was: its picture is there at once
+            if (_thumbs.TryGetValue(f.FullName, out var known) && known.Stamp == f.LastWriteTimeUtc.Ticks && known.Length == f.Length)
+                thumb.Background = Shown(known.Picture);
+            else cards.Add((f, thumb));
         }
+        // pictures of files that are gone (or beyond the newest 150) are let go
+        var listed = new HashSet<string>(files.Select(f => f.FullName), StringComparer.OrdinalIgnoreCase);
+        foreach (var gone in _thumbs.Keys.Where(k => !listed.Contains(k)).ToList()) _thumbs.Remove(gone);
+        if (cards.Count == 0) return;
 
         Task.Run(() =>
         {
-            foreach (var (file, thumb) in cards)
+            try
             {
-                if (token.IsCancellationRequested) return;
-                var bmp = ImageIO.LoadThumbnail(file.FullName, decodeW);
-                if (bmp == null) continue;
-                Dispatcher.InvokeAsync(() =>
+                // newest first, a few at a time (decoding a big screenshot takes a while; the disk is not the limit)
+                var order = System.Collections.Concurrent.Partitioner.Create(cards, System.Collections.Concurrent.EnumerablePartitionerOptions.NoBuffering);
+                Parallel.ForEach(order, new ParallelOptions { MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount / 2, 1, 4), CancellationToken = token }, item =>
                 {
-                    if (token.IsCancellationRequested) return;
-                    thumb.Background = new ImageBrush(bmp) { Stretch = Stretch.UniformToFill, AlignmentY = AlignmentY.Top };
-                }, DispatcherPriority.Background);
+                    var (file, thumb) = item;
+                    var bmp = ImageIO.LoadThumbnail(file.FullName, decodeW);
+                    if (bmp == null) return;
+                    Dispatcher.InvokeAsync(() =>
+                    {
+                        if (token.IsCancellationRequested) return;
+                        _thumbs[file.FullName] = (file.LastWriteTimeUtc.Ticks, file.Length, bmp);
+                        thumb.Background = Shown(bmp);
+                    }, DispatcherPriority.Background);
+                });
             }
+            catch (OperationCanceledException) { /* the list was loaded again meanwhile */ }
+            catch (Exception ex) { Log.Error("Thumbnails", ex); }
         }, token);
     }
 
@@ -361,8 +381,8 @@ public partial class MainWindow : Window
 
     private void SetDefault_Click(object sender, RoutedEventArgs e)
     {
-        FileAssociations.Register(MediaFormats.AssociationList);
-        FileAssociations.OpenDefaultAppsSettings();
+        // the file types first (their icons are drawn), then Windows' page where LinearFrame is picked
+        FileAssociations.Register(MediaFormats.AssociationList).ContinueWith(_ => Dispatcher.InvokeAsync(FileAssociations.OpenDefaultAppsSettings));
     }
 
     // =============================================================== settings
@@ -372,7 +392,9 @@ public partial class MainWindow : Window
         _loadingSettings = true;
         RegionHotkeyBox.Gesture = _s.RegionHotkey.Clone();
         RegionHotkey2Box.Gesture = _s.RegionHotkey2.Clone();
+        ClearClipHotkeyBox.Gesture = _s.ClearClipboardHotkey.Clone();
         ClipboardToggle.IsChecked = _s.CopyToClipboard;
+        MultiCopyToggle.IsChecked = _s.MultiCopy;
         AutoSaveToggle.IsChecked = _s.AutoSave;
         FolderText.Text = _s.ScreenshotFolder;
         FmtPng.IsChecked = _s.ImageFormat == ImageFormatKind.Png;
@@ -414,6 +436,7 @@ public partial class MainWindow : Window
         {
             _s.RegionHotkey = g;
             if (g.SameAs(_s.RegionHotkey2)) { _s.RegionHotkey2 = new(); RegionHotkey2Box.Gesture = new(); }
+            if (g.SameAs(_s.ClearClipboardHotkey)) { _s.ClearClipboardHotkey = new(); ClearClipHotkeyBox.Gesture = new(); }
             App.Instance?.SettingsChanged(hotkeysChanged: true);
             UpdateTexts();
         };
@@ -421,8 +444,16 @@ public partial class MainWindow : Window
         {
             _s.RegionHotkey2 = g.SameAs(_s.RegionHotkey) ? new() : g;
             RegionHotkey2Box.Gesture = _s.RegionHotkey2.Clone();
+            if (g.SameAs(_s.ClearClipboardHotkey)) { _s.ClearClipboardHotkey = new(); ClearClipHotkeyBox.Gesture = new(); }
             App.Instance?.SettingsChanged(hotkeysChanged: true);
             UpdateTexts();
+        };
+        ClearClipHotkeyBox.GestureChanged += g =>
+        {
+            // one combination does one thing: the screenshot shortcuts win
+            _s.ClearClipboardHotkey = g.SameAs(_s.RegionHotkey) || g.SameAs(_s.RegionHotkey2) ? new() : g;
+            ClearClipHotkeyBox.Gesture = _s.ClearClipboardHotkey.Clone();
+            App.Instance?.SettingsChanged(hotkeysChanged: true);
         };
 
         void Toggle(CheckBox cb, Action<bool> set, bool startup = false)
@@ -431,6 +462,7 @@ public partial class MainWindow : Window
             cb.Unchecked += (_, _) => { if (_loadingSettings) return; set(false); App.Instance?.SettingsChanged(startupChanged: startup); };
         }
         Toggle(ClipboardToggle, v => _s.CopyToClipboard = v);
+        Toggle(MultiCopyToggle, v => _s.MultiCopy = v);
         Toggle(AutoSaveToggle, v => _s.AutoSave = v);
         Toggle(DetectToggle, v => _s.DetectWindows = v);
         Toggle(ThumbToggle, v => _s.ShowThumbnail = v);

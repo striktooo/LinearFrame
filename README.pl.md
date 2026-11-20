@@ -36,6 +36,11 @@ Naciskasz **Ctrl + Shift + 4**: ekran zamarza i lekko przyciemnia się. **Przeci
 - Skrót ustawiasz, jak chcesz: kombinacja, **jeden klawisz** (End, F13, PrintScreen…) albo **boczny przycisk myszy**
   (Mysz 4 / Mysz 5) — plus opcjonalny drugi skrót. Kliknięcie pustego pulpitu łapie cały monitor.
 - Rozmiar wybierasz od razu na pasku: **Oryginał, Full HD, 2K, 4K albo 8K**.
+- **Ctrl + C + C** (C dwa razy, z wciśniętym Ctrl) *dokłada* zrzut do tych, które już są w schowku — do 10 — i jedno Ctrl+V
+  wkleja wszystkie naraz do czatu, maila albo folderu. Zwykłe Ctrl+C jak zawsze zastępuje schowek, a **Ctrl+Shift+Backspace**
+  (albo Twój skrót) go czyści.
+- **T** (albo przycisk z tekstem) kopiuje **tekst** z zaznaczenia zamiast obrazka — bez internetu, z polskimi znakami.
+  **Kod QR** w zaznaczeniu dostaje przycisk, który otwiera jego link (także potem na miniaturce).
 - Wiele monitorów i różne skalowania (DPI); prawdziwe, fizyczne piksele. Strzałkami przesuwasz zaznaczenie co piksel.
 
 ### ✨ Zrzuty HD — naprawdę wyrenderowane nawet w 4×, nigdy powiększane
@@ -57,7 +62,9 @@ Wszystko to zasłania zamrożona nakładka; Twój prawdziwy monitor, jego rozdzi
 ### ✏️ Adnotacje i kadr, który rośnie
 ![Edytor](docs/images/editor.png)
 
-Strzałki, linie i podkreślenia, zakreślacz, pióro, prostokąty, elipsy, tekst, numerowane kroki i **zamazywanie** prywatnych rzeczy.
+Strzałki, zakreślacz, pióro, tekst, numerowane kroki i **zamazywanie** prywatnych rzeczy.
+**Tekst** to te same napisy co w edytorze wideo: TikTok Sans z obrysem, tłem albo bez, kolory TikToka i emotki z iPhone'a;
+rozmiar zmieniasz za róg — linijki zostają takie, jak je napisałeś.
 Każdy element da się potem przesunąć, powiększyć i przemalować; cofanie bez limitu.
 
 **Kadruj i rozszerz** to coś, czego nie ma gdzie indziej: ciągniesz ramkę *na zewnątrz*, a LinearFrame rozpoznaje kolor tła
@@ -80,6 +87,15 @@ kółko powiększa tam, gdzie jest kursor, przeciąganiem się rozglądasz, dwuk
 stoją jak trzeba, kopia wielkości ekranu pojawia się od razu, a każdy piksel jest dekodowany dopiero przy powiększeniu.
 **← →** przechodzą po folderze, **Edytuj** otwiera edytor adnotacji.
 
+**Tekst na żywo**, jak w iPhonie: tekst na zdjęciu jest rozpoznawany w tle — nad nim kursor zmienia się w kreskę, przeciąganiem
+zaznaczasz słowa (dwuklik bierze całą linię), **Ctrl+C** je kopiuje, a przycisk z tekstem kopiuje wszystko. Kod QR na zdjęciu
+dostaje przycisk, który otwiera jego link. Wyraźne pismo odręczne też się czyta; bazgroły — niekoniecznie.
+
+Rozpoznawanie tekstu to dwa silniki naraz, w pełni offline: ekran czyta OCR wbudowany w Windows (szybki i zna polskie znaki),
+a **zdjęcia** — etykietę paczki, kartkę pod kątem, tekst na pstrokatym tle, numer wydrukowany pionowo przy kodzie kreskowym —
+**PaddleOCR PP-OCRv5**: znajduje każdą linię pod dowolnym kątem, prostuje ją i czyta razem z silnikiem Windows; dla każdej linii
+wygrywa lepszy odczyt, a polskie znaki, które gubi model ze zdjęć, wracają ze słownika ortograficznego Windows.
+
 ### ✂️ Edytor wideo — cięcie, napisy, emotki, baner, dowolny format
 ![Edytor wideo](docs/images/video-editor.png)
 
@@ -88,7 +104,8 @@ Klikasz ✂️ na pasku sterowania (albo **E**) i pod filmem otwiera się edytor
 - **Podziel** w miejscu znacznika i **Usuń** kawałki — wytniesz dowolnie wiele fragmentów. **Połącz** dokleja kolejny film na końcu.
 - **Tekst** — napisy czcionką TikToka (TikTok Sans): domyślnie biały z czarnym obrysem, albo z tłem, albo bez niczego;
   kolory jak w TikToku, dowolny rozmiar; przeciągasz je po filmie (same łapią środek), dwuklik = edycja tekstu.
-- **Emotki** — prawdziwa galeria emotek z iPhone'a (grafiki Apple pobierane raz, przy pierwszym otwarciu).
+- **Emotki** — buźka obok napisu otwiera prawdziwą galerię emotek z iPhone'a (grafiki Apple pobierane raz): najpierw ostatnio
+  używane, do tego wyszukiwarka po polsku i angielsku („serce”, „ogień”, „fire”…). Napis z samej emotki to naklejka.
 - **Baner** — wstawia Twój baner (film z przezroczystością, np. ProRes 4444 .mov) w miejscu znacznika: film gra jeszcze 0,7 s,
   potem stoi, póki baner leci, i rusza 0,4 s przed końcem banera. Przesuwasz go po filmie albo na osi czasu, zmieniasz rozmiar,
   **Góra / Środek / Dół**. Prawy klik na przycisku = inny plik banera.
@@ -121,18 +138,20 @@ jest pobierany ponownie tylko wtedy, gdy naprawdę się zmienił.
 
 Aplikacja startuje od razu po zalogowaniu do Windows — przez małe zadanie użytkownika w Harmonogramie zadań, bez uprawnień
 administratora (programy z klasycznej listy „Uruchom” Windows wstrzymuje o 20–30 s); wyłączysz to w Ustawieniach. Żeby otwierała filmy, muzykę albo zdjęcia domyślnie: *Odtwarzacz →
-Otwieraj wideo, muzykę i zdjęcia w LinearFrame*; pliki wideo dostają też pozycję **Przytnij w LinearFrame** w klasycznym menu kontekstowym.
+Otwieraj wideo, muzykę i zdjęcia w LinearFrame*; każdy format dostaje wtedy własną, płaską ikonkę — niebieski film, różowa nuta,
+zielony obrazek, z nazwą formatu — więc w folderze od razu widać, co jest czym; pliki wideo mają też **Edytuj w LinearFrame**
+w klasycznym menu kontekstowym.
 
 ## Skróty
 
 | Gdzie | Klawisze |
 |---|---|
-| Wszędzie | **Ctrl+Shift+4** zrzut (albo Twój klawisz / przycisk myszy) |
-| Przy zaznaczaniu | **Ctrl+C / Enter** kopiuj i zapisz · **E** edytuj · **Ctrl+S** zapisz jako · **Esc** anuluj · **strzałki** przesuń · prawy klik czyści |
-| Edytor | **V P H A L R O T N B** narzędzia · **C** kadruj i rozszerz · **Ctrl+Z / Ctrl+Shift+Z** · **Ctrl+C** kopiuj · **Ctrl+S** gotowe |
+| Wszędzie | **Ctrl+Shift+4** zrzut (albo Twój klawisz / przycisk myszy) · **Ctrl+Shift+Backspace** wyczyść schowek |
+| Przy zaznaczaniu | **Ctrl+C / Enter** kopiuj i zapisz · **Ctrl+C+C** dołóż do schowka · **T** kopiuj tekst · **E** edytuj · **Ctrl+S** zapisz jako · **Esc** anuluj · **strzałki** przesuń · prawy klik czyści |
+| Edytor | **V P H A T N B** narzędzia · **C** kadruj i rozszerz · **Ctrl+Z / Ctrl+Shift+Z** · **Ctrl+C** kopiuj · **Ctrl+S** gotowe |
 | Odtwarzacz | **Spacja** pauza · **← →** 5 s · **J L** 10 s · **, .** klatka · **↑ ↓** głośność · **M** wycisz · **F** pełny ekran · **Ctrl+C** kopiuj klatkę · **E** edytor wideo |
 | Edytor wideo | **Spacja** odtwórz · **← →** klatka (**Shift** 1 s) · **S** podziel · **Delete** usuń · **T** tekst · **Ctrl+Z / Ctrl+Y** · **Esc** gotowe / wyjdź |
-| Zdjęcia | **← →** poprzednie / następne · **kółko** powiększenie · **dwuklik**, **0 / 1** cały obraz / rzeczywiste piksele · **Ctrl+C** kopiuj · **E** edytuj · **Esc** zamknij |
+| Zdjęcia | **← →** poprzednie / następne · **kółko** powiększenie · **dwuklik**, **0 / 1** cały obraz / rzeczywiste piksele · **Ctrl+C** kopiuj (najpierw zaznaczony tekst) · **Ctrl+A** zaznacz cały tekst · **E** edytuj · **Esc** zamknij |
 
 Wiersz poleceń: `LinearFrame.exe film.mp4` · `--trim film.mp4` · `--cut film.mp4` · `--capture` · `--settings` · `--exit`
 
@@ -141,7 +160,8 @@ Wiersz poleceń: `LinearFrame.exe film.mp4` · `--trim film.mp4` · `--cut film.
 ## Jak to działa od środka
 
 Jedna aplikacja C# / .NET 10 WPF z ręcznie zrobionym motywem w stylu macOS (jasny i ciemny), rozmawiająca bezpośrednio z Win32,
-plus dwa sprawdzone silniki obok pliku exe: **mpv** do odtwarzania i **FFmpeg** do edycji.
+plus sprawdzone silniki obok pliku exe: **mpv** do odtwarzania, **FFmpeg** do edycji i **ONNX Runtime** z modelami
+PaddleOCR PP-OCRv5 do czytania tekstu na zdjęciach.
 
 ```mermaid
 flowchart LR
@@ -287,8 +307,8 @@ aktualizują się same w ciągu pół dnia. Instrukcja krok po kroku: [docs/GITH
 
 ## Pomysły na później
 
-Skalowanie AI (Real-ESRGAN przez DirectML) · przewijane zrzuty długich stron · nagrywanie ekranu do MP4/GIF · OCR (kopiowanie
-tekstu ze zrzutu) · przypinanie zrzutu nad wszystkimi oknami · podpis cyfrowy.
+Skalowanie AI (Real-ESRGAN przez DirectML) · przewijane zrzuty długich stron · nagrywanie ekranu do MP4/GIF ·
+przypinanie zrzutu nad wszystkimi oknami · podpis cyfrowy.
 
 ## Licencja
 

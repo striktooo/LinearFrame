@@ -78,8 +78,9 @@ public sealed class ThinSlider : FrameworkElement
     {
         base.OnMouseMove(e);
         if (!_dragging) return;
+        double v = _value;
         Value = ValueAt(e);
-        ValueChanging?.Invoke(_value);
+        if (_value != v) ValueChanging?.Invoke(_value); // only across: moving up and down asks for nothing new
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
@@ -89,6 +90,16 @@ public sealed class ThinSlider : FrameworkElement
         _dragging = false;
         ReleaseMouseCapture();
         Value = ValueAt(e);
+        ValueCommitted?.Invoke(_value);
+        InvalidateVisual();
+    }
+
+    protected override void OnLostMouseCapture(MouseEventArgs e)
+    {
+        base.OnLostMouseCapture(e);
+        if (!_dragging) return;
+        // e.g. another window came up mid-drag: finish where the knob is (the player picks up playing again)
+        _dragging = false;
         ValueCommitted?.Invoke(_value);
         InvalidateVisual();
     }
@@ -148,11 +159,11 @@ public sealed class WaveformView : FrameworkElement
         SnapsToDevicePixels = true;
     }
 
-    public void SetPeaks(float[]? peaks)
+    public void SetPeaks(float[]? peaks, bool animate = true)
     {
         _peaks = peaks;
         _bars = null;
-        if (peaks != null)
+        if (peaks != null && animate)
             BeginAnimation(RevealProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(420))
             { EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut } });
         InvalidateVisual();

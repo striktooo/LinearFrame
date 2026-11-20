@@ -3,7 +3,7 @@
   Builds the ready-to-share LinearFrame package: dist/LinearFrame-<version>-win-x64.zip
 
 .DESCRIPTION
-  1. makes sure ./deps has libmpv and ffmpeg (scripts/fetch-deps.ps1)
+  1. makes sure ./deps has libmpv, ffmpeg and the text recognition engine (scripts/fetch-deps.ps1)
   2. publishes a self-contained single-file LinearFrame.exe (no .NET install needed on the target PC)
   3. assembles dist/LinearFrame with the exe, the engine folder and short instructions, and zips it
 
@@ -35,8 +35,10 @@ if (Test-Path $app) { Remove-Item -Recurse -Force $app }
 New-Item -ItemType Directory -Force (Join-Path $app 'engine') | Out-Null
 
 Copy-Item (Join-Path $pub 'LinearFrame.exe') $app
-Copy-Item (Join-Path $pub 'engine/libmpv-2.dll') (Join-Path $app 'engine')
-Copy-Item (Join-Path $pub 'engine/ffmpeg.exe') (Join-Path $app 'engine')
+Copy-Item (Join-Path $pub 'engine/*') (Join-Path $app 'engine')
+foreach ($f in 'libmpv-2.dll', 'ffmpeg.exe', 'onnxruntime.dll', 'ch_PP-OCRv5_det_mobile.onnx', 'latin_PP-OCRv5_rec_mobile.onnx', 'ppocrv5_latin_dict.txt', 'msvcp140.dll') {
+    if (-not (Test-Path (Join-Path $app "engine/$f"))) { throw "engine/$f missing - run scripts/fetch-deps.ps1" }
+}
 Copy-Item (Join-Path $root 'LICENSE') (Join-Path $app 'LICENSE.txt')
 Copy-Item (Join-Path $root 'THIRD-PARTY-NOTICES.md') (Join-Path $app 'THIRD-PARTY-NOTICES.txt')
 Copy-Item (Join-Path $root 'src/LinearFrame/Assets/Fonts/OFL.txt') (Join-Path $app 'OFL-TikTokSans.txt')
@@ -49,8 +51,8 @@ $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
 Set-Content "$zip.sha256" "$hash  $(Split-Path -Leaf $zip)"
 Write-Host ("Done: {0} ({1:N1} MB)  SHA256 {2}" -f $zip, ((Get-Item $zip).Length / 1MB), $hash)
 
-# The small update package: everything except the engine folder (mpv + FFmpeg hardly ever change, and they are 60 % of
-# the download). Its .sha256 also lists the engine files this version expects - an installed copy whose engine matches
+# The small update package: everything except the engine folder (mpv, FFmpeg and the OCR engine hardly ever change, and
+# they are most of the download). Its .sha256 also lists the engine files this version expects - an installed copy whose engine matches
 # takes this package, any other one takes the full ZIP above.
 $upd = Join-Path $dist "LinearFrame-$version-update.zip"
 if (Test-Path $upd) { Remove-Item -Force $upd }

@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using LinearFrame.Imaging;
+using LinearFrame.Player.Edit;
 
 namespace LinearFrame.Editor;
 
@@ -117,24 +118,53 @@ public sealed class ShapeAnnotation : Annotation
     }
 }
 
-public sealed class TextAnnotation : Annotation
+/// <summary>
+/// A caption - the very same as in the video editor (TikTok Sans; outline, plate or plain; TikTok's colours; iPhone emoji),
+/// drawn by the same code (<see cref="Captions"/>). Centred on <see cref="Center"/>; its font size is a part of the
+/// picture's height, so it looks the same on a screenshot and on a 12 MP photo.
+/// </summary>
+public sealed class CaptionAnnotation : Annotation, ICaption
 {
-    public Point Position { get; set; }
+    public Point Center { get; set; }
     public string Text { get; set; } = "";
-    public double FontSize => Math.Max(14, Width * 4.2);
-    internal bool Editing { get; set; }
+    public CaptionStyle Style { get; set; } = CaptionStyle.Stroke;
+    public double Size { get; set; } = 0.05;
+    public double WrapEm { get; set; }
+    /// <summary>The picture the size is measured against (the document's picture - cropping doesn't change a caption).</summary>
+    public double CanvasWidth { get; set; } = 1000;
+    public double CanvasHeight { get; set; } = 1000;
+
+    Color ICaption.Color => Color;
+
+    private (string Key, Captions.Layout Layout)? _layout;
+
+    /// <summary>Laid out once per text / look / size (hit tests and the selection frame ask for it all the time).</summary>
+    public Captions.Layout Layout()
+    {
+        string key = FormattableString.Invariant($"{Text}|{Style}|{Size}|{WrapEm}|{CanvasWidth}|{CanvasHeight}");
+        if (_layout is { } l && l.Key == key) return l.Layout;
+        var layout = Captions.Arrange(this, CanvasWidth, CanvasHeight);
+        _layout = (key, layout);
+        return layout;
+    }
 
     public override Rect Bounds
     {
         get
         {
-            var ft = AnnotationRenderer.MakeText(this, 1.0);
-            return new Rect(Position, new Size(Math.Max(ft.WidthIncludingTrailingWhitespace, 8), ft.Height));
+            var b = Layout().Bounds;
+            b.Offset(Center.X, Center.Y);
+            return b;
         }
     }
 
-    public override Annotation Clone() => new TextAnnotation { Color = Color, Width = Width, Position = Position, Text = Text };
-    public override void Offset(Vector v) => Position += v;
+    public override Annotation Clone() => new CaptionAnnotation
+    {
+        Color = Color, Width = Width, Center = Center, Text = Text, Style = Style, Size = Size, WrapEm = WrapEm,
+        CanvasWidth = CanvasWidth, CanvasHeight = CanvasHeight,
+    };
+
+    public override void Offset(Vector v) => Center += v;
 }
 
 public sealed class CounterAnnotation : Annotation
@@ -152,16 +182,7 @@ public sealed class CounterAnnotation : Annotation
 /// <summary>Draws annotations. The same code renders the editor view and the exported file.</summary>
 public static class AnnotationRenderer
 {
-    private static readonly Typeface TextFace = new(new FontFamily("Segoe UI Variable Display, Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
     private static readonly Typeface CounterFace = new(new FontFamily("Segoe UI Variable Display, Segoe UI"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
-
-    public static FormattedText MakeText(TextAnnotation t, double pixelsPerDip)
-    {
-        var brush = new SolidColorBrush(t.Color);
-        brush.Freeze();
-        return new FormattedText(string.IsNullOrEmpty(t.Text) ? " " : t.Text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
-            TextFace, t.FontSize, brush, pixelsPerDip);
-    }
 
     public static void Draw(DrawingContext dc, Annotation a, MarkupDocument doc)
     {
@@ -170,7 +191,7 @@ public static class AnnotationRenderer
             case StrokeAnnotation s: DrawStroke(dc, s); break;
             case LineAnnotation l: if (l.Arrow) DrawArrow(dc, l); else DrawLine(dc, l); break;
             case ShapeAnnotation sh: DrawShape(dc, sh, doc); break;
-            case TextAnnotation t: DrawText(dc, t); break;
+            case CaptionAnnotation c: if (c.Text.Length > 0) Captions.Draw(dc, c.Layout(), c.Center); break;
             case CounterAnnotation c: DrawCounter(dc, c); break;
         }
     }
@@ -311,13 +332,6 @@ public static class AnnotationRenderer
         dc.PushClip(new RectangleGeometry(target));
         dc.DrawDrawing(group);
         dc.Pop();
-    }
-
-    private static void DrawText(DrawingContext dc, TextAnnotation t)
-    {
-        if (string.IsNullOrEmpty(t.Text) || t.Editing) return;
-        var ft = MakeText(t, 1.0);
-        dc.DrawText(ft, t.Position);
     }
 
     private static void DrawCounter(DrawingContext dc, CounterAnnotation c)

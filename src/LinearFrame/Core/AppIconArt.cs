@@ -5,11 +5,16 @@ using System.Windows.Media.Imaging;
 namespace LinearFrame.Core;
 
 /// <summary>
-/// The app icon drawn as vectors: a squircle with a soft gradient, viewfinder corners and a play glyph.
+/// The app icon drawn as vectors, flat: a dark squircle, white viewfinder corners and a yellow play glyph - no gradients.
 /// Rendered at the exact pixel size needed (tray icon at any DPI, .ico generation for the exe).
 /// </summary>
 internal static class AppIconArt
 {
+    private static readonly Brush Back = Frozen(new SolidColorBrush(Color.FromRgb(0x1C, 0x1C, 0x1E)));
+    private static readonly Brush Accent = Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0xD6, 0x0A)));
+
+    private static T Frozen<T>(T f) where T : Freezable { f.Freeze(); return f; }
+
     public static DrawingVisual Draw(double size)
     {
         var dv = new DrawingVisual();
@@ -20,35 +25,12 @@ internal static class AppIconArt
         // Squircle (superellipse n=5) - the "continuous corner" look of app icons.
         double inset = tiny ? 0 : s * 0.04;
         var squircle = Superellipse(new Rect(inset, inset, s - inset * 2, s - inset * 2), 5.0);
-
-        var bg = new LinearGradientBrush
-        {
-            StartPoint = new Point(0.1, 0),
-            EndPoint = new Point(0.9, 1),
-            GradientStops =
-            {
-                new GradientStop(Color.FromRgb(0x7B, 0x61, 0xFF), 0.0),
-                new GradientStop(Color.FromRgb(0x4C, 0x6F, 0xFF), 0.45),
-                new GradientStop(Color.FromRgb(0x1F, 0xB6, 0xFF), 1.0),
-            }
-        };
-        bg.Freeze();
-        dc.DrawGeometry(bg, null, squircle);
-
-        // soft top light
-        if (!tiny)
-        {
-            var sheen = new LinearGradientBrush(Color.FromArgb(0x38, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), 90);
-            sheen.Freeze();
-            dc.PushClip(squircle);
-            dc.DrawRectangle(sheen, null, new Rect(0, 0, s, s * 0.55));
-            dc.Pop();
-        }
+        dc.DrawGeometry(Back, null, squircle);
 
         // viewfinder corners
-        double m = s * (tiny ? 0.22 : 0.25);
-        double len = s * (tiny ? 0.2 : 0.17);
-        double th = Math.Max(1.6, s * (tiny ? 0.11 : 0.065));
+        double m = s * (tiny ? 0.2 : 0.24);
+        double len = s * (tiny ? 0.21 : 0.17);
+        double th = Math.Max(1.7, s * (tiny ? 0.12 : 0.064));
         var pen = new Pen(Brushes.White, th) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
         pen.Freeze();
         var corners = new StreamGeometry();
@@ -69,23 +51,20 @@ internal static class AppIconArt
         corners.Freeze();
         dc.DrawGeometry(null, pen, corners);
 
-        // play glyph
-        if (!tiny || s >= 20)
+        // play glyph, the one colour of the icon
+        double tri = s * (tiny ? 0.27 : 0.21);
+        double cx = s * 0.5 + tri * 0.12, cy = s * 0.5;
+        var play = new StreamGeometry();
+        using (var g = play.Open())
         {
-            double tri = s * (tiny ? 0.24 : 0.2);
-            double cx = s * 0.5 + tri * 0.12, cy = s * 0.5;
-            var play = new StreamGeometry();
-            using (var g = play.Open())
-            {
-                g.BeginFigure(new Point(cx - tri * 0.45, cy - tri * 0.55), true, true);
-                g.LineTo(new Point(cx + tri * 0.6, cy), true, true);
-                g.LineTo(new Point(cx - tri * 0.45, cy + tri * 0.55), true, true);
-            }
-            play.Freeze();
-            var rounded = new Pen(Brushes.White, Math.Max(1, s * 0.03)) { LineJoin = PenLineJoin.Round };
-            rounded.Freeze();
-            dc.DrawGeometry(Brushes.White, rounded, play);
+            g.BeginFigure(new Point(cx - tri * 0.45, cy - tri * 0.55), true, true);
+            g.LineTo(new Point(cx + tri * 0.6, cy), true, true);
+            g.LineTo(new Point(cx - tri * 0.45, cy + tri * 0.55), true, true);
         }
+        play.Freeze();
+        var rounded = new Pen(Accent, Math.Max(1, s * 0.035)) { LineJoin = PenLineJoin.Round };
+        rounded.Freeze();
+        dc.DrawGeometry(Accent, rounded, play);
         return dv;
     }
 

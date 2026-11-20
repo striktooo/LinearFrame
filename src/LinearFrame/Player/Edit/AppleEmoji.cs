@@ -26,6 +26,10 @@ public static class AppleEmoji
     {
         /// <summary>The emoji as text.</summary>
         public string Text => string.Concat(Unified.Split('-').Select(h => char.ConvertFromUtf32(Convert.ToInt32(h, 16))));
+        /// <summary>Its names (English, and Polish from Unicode CLDR), simplified - a match here counts most.</summary>
+        public string[] Names { get; internal set; } = Array.Empty<string>();
+        /// <summary>Other words it is found by (short names, Polish keywords), simplified.</summary>
+        public string[] Words { get; internal set; } = Array.Empty<string>();
     }
 
     /// <summary>iOS order and names of the gallery tabs (emoji-data category → tab).</summary>
@@ -83,7 +87,13 @@ public static class AppleEmoji
                 int I(string k) => e.TryGetProperty(k, out var v) && v.TryGetInt32(out int x) ? x : 0;
                 var cat = S("category");
                 if (cat == "Component") continue;
-                list.Add(new Entry(S("unified").ToLowerInvariant(), S("non_qualified").ToLowerInvariant(), S("image"), S("short_name"), cat, I("sort_order"), I("sheet_x"), I("sheet_y")));
+                var entry = new Entry(S("unified").ToLowerInvariant(), S("non_qualified").ToLowerInvariant(), S("image"), S("short_name"), cat, I("sort_order"), I("sheet_x"), I("sheet_y"));
+                entry.Names = new[] { Simplify(S("name").Replace('_', ' ')) };
+                var words = new List<string>();
+                if (e.TryGetProperty("short_names", out var sn) && sn.ValueKind == JsonValueKind.Array)
+                    words.AddRange(sn.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!.Replace('_', ' ')));
+                entry.Words = words.Select(Simplify).Where(w => w.Length > 0).Distinct().ToArray();
+                list.Add(entry);
             }
             list.Sort((a, b) => a.Order.CompareTo(b.Order));
             var by = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
@@ -93,6 +103,7 @@ public static class AppleEmoji
                 if (x.NonQualified.Length > 0) by.TryAdd(x.NonQualified, x);
                 by.TryAdd(x.Unified.Replace("-fe0f", ""), x);
             }
+            AddPolishWords(by);
             _byCode = by;
             _catalog = list;
             return list;
@@ -196,6 +207,82 @@ public static class AppleEmoji
             return bi.PixelWidth is > 8 and <= 512 ? bi : null;
         }
         catch { try { File.Delete(path); } catch { /* broken download */ } return null; }
+    }
+
+    // ------------------------------------------------------------------ search
+
+    /// <summary>Lower case without accents ("Śmiech" → "smiech"), so "serce", "SERCE" and "sérce" all find ❤️.</summary>
+    public static string Simplify(string s)
+    {
+        var d = s.Trim().ToLowerInvariant().Replace('ł', 'l').Normalize(System.Text.NormalizationForm.FormD);
+        var sb = new System.Text.StringBuilder(d.Length);
+        foreach (var c in d)
+            if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark) sb.Append(c);
+        return sb.ToString();
+    }
+
+    /// <summary>Polish names and keywords (Unicode CLDR, built into the app as Assets/emoji-pl.txt.gz).</summary>
+    private static void AddPolishWords(Dictionary<string, Entry> by)
+    {
+        try
+        {
+            var res = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/emoji-pl.txt.gz"));
+            if (res == null) return;
+            using var gz = new System.IO.Compression.GZipStream(res.Stream, System.IO.Compression.CompressionMode.Decompress);
+            using var reader = new StreamReader(gz, System.Text.Encoding.UTF8);
+            string? line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                int tab = line.IndexOf('\t');
+                if (tab <= 0) continue;
+                Entry? e = null;
+                foreach (var code in Candidates(line[..tab]))
+                    if (by.TryGetValue(code, out e)) break;
+                if (e == null) continue;
+                // the first one is the Polish name, the rest are keywords
+                var pl = line[(tab + 1)..].Split('|').Select(Simplify).Where(w => w.Length > 0).ToArray();
+                if (pl.Length == 0) continue;
+                e.Names = e.Names.Append(pl[0]).Distinct().ToArray();
+                e.Words = e.Words.Concat(pl.Skip(1)).Distinct().ToArray();
+            }
+        }
+        catch (Exception ex) { Log.Warn("Emoji keywords: " + ex.Message); }
+    }
+
+    // the most used emoji, most used first (Unicode's emoji frequency list): they win a tie
+    private const string PopularList = "😂❤🤣👍😭🙏😘🥰😍😊🎉😁💕🥺😅🔥☺🤦♥🤷🙄😆🤗😉🎂🤔👏🙂😳🥳😎👌💜😔💪✨💖👀😋😏😢👉💗😩💯🌹💞🎈💙😃😡💐😜🙈🤞😄🤤🙌🤪❣😀💋💀👇💔😌💓🤩🙃😬😱😴🤭😐🌞😒😇🌸😈🎶✌🎊🥵😞💚☀🖤💰😚👑🎁💥🙋☹😑🥴👈💩✅";
+    private static Dictionary<string, int>? _popular;
+
+    private static int Popularity(Entry e)
+    {
+        _popular ??= Clusters(PopularList).Select((c, i) => (Code: Code(c).Replace("-fe0f", ""), i))
+            .GroupBy(x => x.Code).ToDictionary(g => g.Key, g => g.First().i);
+        return _popular.TryGetValue(e.Unified.Replace("-fe0f", ""), out int r) ? r : 1000;
+    }
+
+    /// <summary>
+    /// Emoji matching what was typed. A word of its name counts most ("serce" → ❤️ "czerwone serce"), then a keyword, then
+    /// the start of a word, then anywhere inside ("serc" finds every heart); a tie goes to the more used emoji.
+    /// </summary>
+    public static List<Entry> Search(string query, int max = 160)
+    {
+        var cat = _catalog;
+        var q = Simplify(query);
+        if (cat == null || q.Length == 0) return new List<Entry>();
+        static int Match(string w, string q, int exact, int word, int prefix, int inside) =>
+            w == q ? exact
+            : (" " + w + " ").Contains(" " + q + " ", StringComparison.Ordinal) ? word
+            : w.StartsWith(q, StringComparison.Ordinal) || w.Contains(" " + q, StringComparison.Ordinal) ? prefix
+            : q.Length >= 3 && w.Contains(q, StringComparison.Ordinal) ? inside : 0;
+        var scored = new List<(int Score, int Pop, Entry E)>();
+        foreach (var e in cat)
+        {
+            int best = 0;
+            foreach (var n in e.Names) best = Math.Max(best, Match(n, q, 9, 8, 5, 2));
+            foreach (var w in e.Words) best = Math.Max(best, Match(w, q, 7, 6, 4, 1));
+            if (best > 0) scored.Add((best, Popularity(e), e));
+        }
+        return scored.OrderByDescending(x => x.Score).ThenBy(x => x.Pop).ThenBy(x => x.E.Order).Take(max).Select(x => x.E).ToList();
     }
 
     /// <summary>Code of one emoji written as text (an emoji typed into a caption), e.g. "😂" → "1f602".</summary>

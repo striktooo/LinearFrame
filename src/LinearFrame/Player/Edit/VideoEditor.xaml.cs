@@ -52,19 +52,21 @@ public partial class VideoEditor : UserControl
     private Rect _canvas;
 
     private int _frameClip = -1;
-    private long _lastBlurCheck;
+    private long _lastBlurCheck, _lastFrameTick;
 
     internal bool IsActive => _win != null;
     internal bool IsPlaying => _playing;
     /// <summary>A caption is being typed: every key belongs to the text box.</summary>
-    internal bool IsTyping => TextEdit.IsKeyboardFocusWithin;
+    internal bool IsTyping => Caption.IsTyping;
     /// <summary>Saved (new or replaced file to open) or left; the player takes over again.</summary>
     internal event Action<string?, bool>? Finished;
 
     public VideoEditor()
     {
         InitializeComponent();
+        MouseLeftButtonDown += OnPanelPress;
         Timeline.Seek += (f, final) => Seek(f, final);
+        _scrub = new ScrubSeeker((t, exact) => _mpv?.CommandAsync("seek", N(t), exact ? "absolute+exact" : "absolute+keyframes"));
         _streamSettle.Tick += (_, _) =>
         {
             _streamSettle.Stop();
@@ -74,18 +76,40 @@ public partial class VideoEditor : UserControl
         Timeline.OverlaySelected += o => Select(o);
         Timeline.OverlayMoved += OnBarMoved;
         Timeline.SegmentTrimmed += OnTrimmed;
-        Picker.Picked += OnEmojiPicked;
-        TextSize.ValueChanging += v => SetSize(TextSizeFrom(v), false);
-        TextSize.ValueCommitted += v => SetSize(TextSizeFrom(v), true);
+        Caption.TextEdited += OnCaptionText;
+        Caption.StyleChosen += OnCaptionStyle;
+        Caption.ColorChosen += OnCaptionColor;
+        Caption.SizeChosen += (size, final) => { if (_sel is TextOverlay) SetSize(size, final); };
+        Caption.DeleteRequested += () => { if (_sel != null) DeleteOverlay(_sel); };
+        Caption.Finished += () =>
+        {
+            Done_Click(this, new RoutedEventArgs());
+            if (_win != null) Keyboard.Focus(_win);
+        };
+        Caption.Redraw += () => { UpdateLayer(force: true); Timeline.Rebuild(); };
         ItemSize.ValueChanging += v => SetSize(ItemSizeFrom(v), false);
         ItemSize.ValueCommitted += v => SetSize(ItemSizeFrom(v), true);
         ZoomSlider.ValueChanging += v => SetZoom(ZoomFrom(v), false);
         ZoomSlider.ValueCommitted += v => SetZoom(ZoomFrom(v), true);
-        BuildSwatches();
         BuildFormatButtons();
     }
 
     private static string N(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+
+    /// <summary>The panel's empty space works like a title bar: dragging it moves the window.</summary>
+    private void OnPanelPress(object sender, MouseButtonEventArgs e)
+    {
+        if (e.Handled || e.ClickCount > 1) return;
+        for (var d = e.OriginalSource as DependencyObject; d != null && d != this;
+             d = d is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d))
+        {
+            if (d is System.Windows.Controls.Primitives.ButtonBase or System.Windows.Controls.Primitives.TextBoxBase
+                or ThinSlider or EditTimeline or EmojiPicker or System.Windows.Controls.Primitives.Popup) return;
+        }
+        if (Window.GetWindow(this) is not PlayerWindow w || w.WindowState == WindowState.Maximized) return;
+        e.Handled = true;
+        w.BeginWindowDrag();
+    }
 
     // =============================================================== start / end
 
@@ -121,7 +145,7 @@ public partial class VideoEditor : UserControl
         layer.VideoZoomed += OnVideoZoomed;
 
         bool audioOnly = !clip.HasVideo;
-        foreach (var b in new UIElement[] { TextBtn, EmojiBtn, BannerBtn, FormatBtn, ClipBtn, ToolsSep })
+        foreach (var b in new UIElement[] { TextBtn, BannerBtn, FormatBtn, ClipBtn, ToolsSep })
             b.Visibility = audioOnly ? Visibility.Collapsed : Visibility.Visible;
         _sprite = new LayeredSprite(win.Handle);
         Timeline.SetProject(_p);
@@ -150,7 +174,7 @@ public partial class VideoEditor : UserControl
         _cts.Cancel();
         Hook(false);
         _playing = false;
-        EmojiPopup.IsOpen = false;
+        Caption.CloseEmoji();
         if (_mpv != null)
         {
             _mpv.StopAt = double.NaN;
@@ -175,6 +199,8 @@ public partial class VideoEditor : UserControl
         _audio?.Close();
         _audio = null;
         _win.ResetPreviewFrame();
+        _win.ShowEditWave(null);
+        _scrubbing = false;
         if (reloadOriginal && _mpv != null)
         {
             // the player shows the original file again, at the moment the playhead was on
@@ -216,9 +242,10 @@ public partial class VideoEditor : UserControl
         {
             _loaded = url;
             _mpv.StopAt = double.NaN;
-            _mpv.Command("loadfile", url, "replace", "-1", $"start={N(e)},pause={(_playing && hold < 0 ? "no" : "yes")}");
+            _scrub.Jumped(e);
+            _mpv.Command("loadfile", url, "replace", "-1", $"start={N(e)},pause={(_playing && hold < 0 && !_scrubbing ? "no" : "yes")}");
         }
-        else _mpv.CommandAsync("seek", N(e), "absolute+exact");
+        else SeekExact(e);
         _hold = hold;
         _holdInto = into;
         _holdStarted = Stopwatch.GetTimestamp();
@@ -249,7 +276,7 @@ public partial class VideoEditor : UserControl
         _hold = best;
         _holdInto = 0;
         _holdStarted = Stopwatch.GetTimestamp();
-        _mpv.CommandAsync("seek", N(_p.Holds[best].E), "absolute+exact"); // exactly the frozen frame
+        SeekExact(_p.Holds[best].E); // exactly the frozen frame
         Hook(true);
     }
 
@@ -269,7 +296,7 @@ public partial class VideoEditor : UserControl
             if (_f >= _p.FinalLength - 0.04) Seek(0, true);
             _playing = true;
             if (_hold >= 0) _holdStarted = Stopwatch.GetTimestamp();
-            else
+            else if (!_scrubbing) // the hand on the playhead: it plays from where it is let go
             {
                 _mpv.SetProperty("pause", "no");
                 ArmStop();
@@ -280,19 +307,53 @@ public partial class VideoEditor : UserControl
         SyncAudio(seek: true);
     }
 
+    private ScrubSeeker _scrub = null!;
+    // the hand is on the playhead: the preview (picture and sound) waits, playing goes on from where it is let go
+    private bool _scrubbing;
+
+    /// <summary>
+    /// The hand on the timeline (<see cref="ScrubSeeker"/>: one seek at a time, each for where the hand is by then) -
+    /// also the edge of a piece being trimmed, on the raw clip.
+    /// </summary>
+    private void MpvSeek(double pos, bool final)
+    {
+        if (_mpv == null) return;
+        _scrub.Span = _mpv.Duration;
+        if (final) _scrub.Release(pos);
+        else _scrub.Move(pos);
+    }
+
+    /// <summary>The player has the picture of a seek on screen (told by the player window).</summary>
+    internal void OnSeekLanded() => _scrub.Landed();
+
+    /// <summary>A jump of its own (keys, a click on a bar, the end of a freeze): exact, and noted.</summary>
+    private void SeekExact(double e)
+    {
+        _scrub.Jumped(e);
+        _mpv?.CommandAsync("seek", N(e), "absolute+exact");
+    }
+
     private void Seek(double f, bool final)
     {
         if (_mpv == null) return;
+        bool endOfScrub = final && _scrubbing;
+        if (!final && !_scrubbing)
+        {
+            _scrubbing = true;
+            StopAudio();
+        }
+        if (final) _scrubbing = false;
         _f = Math.Clamp(f, 0, _p.FinalLength);
         _afterHold = -1;
         var (e, hold, into) = _p.FToE(_f);
         if (_loaded.StartsWith("%raw%", StringComparison.Ordinal)) _loaded = ""; // back from a trim preview
         if (_loaded != PlaybackUrl()) ApplyPlayback();
-        else _mpv.CommandAsync("seek", N(e), final ? "absolute+exact" : "absolute+keyframes");
+        else if (!final || endOfScrub) MpvSeek(e, final);
+        else SeekExact(e);
         _hold = hold;
         _holdInto = into;
         _holdStarted = Stopwatch.GetTimestamp();
-        if (hold >= 0) _mpv.SetProperty("pause", "yes");
+        if (hold >= 0 || _scrubbing) _mpv.SetProperty("pause", "yes");
         else if (_playing) _mpv.SetProperty("pause", "no");
         ArmStop();
         UpdatePlayhead(force: true);
@@ -313,6 +374,12 @@ public partial class VideoEditor : UserControl
     private void OnFrame(object? sender, EventArgs e)
     {
         if (_mpv == null || !_playing) { Hook(false); return; }
+        if (_scrubbing) return; // the hand has the playhead (every move already showed where it is)
+        // at most ~120 times a second: a 400 Hz screen asked for all of this 400 times a second, for nothing a video
+        // (30-60 frames a second) or the eye could tell apart - and the holds still end within 8 ms
+        long tick = Stopwatch.GetTimestamp();
+        if (Stopwatch.GetElapsedTime(_lastFrameTick, tick).TotalMilliseconds < 7.5) return;
+        _lastFrameTick = tick;
         if (_hold >= 0 && _hold < _p.Holds.Count)
         {
             var h = _p.Holds[_hold];
@@ -520,8 +587,8 @@ public partial class VideoEditor : UserControl
     /// <summary>The banner's sound plays along in the preview (the video's own sound is silent in a freeze, like in the file).</summary>
     private void SyncAudio(bool seek)
     {
-        var b = ActiveBanner();
-        if (b == null || !_playing || !b.Asset.HasAudio || !_bannerWav.TryGetValue(b.Asset.Path, out var wav)) { StopAudio(); return; }
+        var b = _playing && !_scrubbing ? ActiveBanner() : null;
+        if (b == null || !b.Asset.HasAudio || !_bannerWav.TryGetValue(b.Asset.Path, out var wav)) { StopAudio(); return; }
         var (f0, _) = _p.BannerSpan(b);
         _audio ??= new MediaPlayer { Volume = (_mpv?.Muted ?? false) ? 0 : Math.Clamp((_mpv?.Volume ?? 100) / 100.0, 0, 1) };
         if (_audioFor != b.Id)
@@ -554,7 +621,7 @@ public partial class VideoEditor : UserControl
             {
                 int bins = (int)Math.Clamp(clip.Duration * 40, 200, 40000);
                 var w = await Ffmpeg.Waveform(clip.Path, bins, clip.Duration, ct);
-                if (w != null && !ct.IsCancellationRequested) await Dispatcher.InvokeAsync(() => Timeline.SetWaveform(k, w));
+                if (w != null && !ct.IsCancellationRequested) await Dispatcher.InvokeAsync(() => { Timeline.SetWaveform(k, w); UpdateEditWave(); });
             }, ct));
         if (clip.HasVideo)
         {
@@ -649,6 +716,7 @@ public partial class VideoEditor : UserControl
         _p.Changed();
         Timeline.Select(_selSeg, _sel);
         Timeline.Rebuild();
+        UpdateEditWave();
         if (playback) ApplyPlayback();
         UpdateFrame();
         UpdateBanner();
@@ -657,6 +725,14 @@ public partial class VideoEditor : UserControl
         UndoBtn.IsEnabled = _undo.Count > 0;
         RedoBtn.IsEnabled = _redo.Count > 0;
         DeleteBtn.IsEnabled = _sel != null || _selSeg >= 0 && _p.Segments.Count > 1;
+    }
+
+    /// <summary>A song's big waveform above the editor shows the edit - the kept pieces, the way they play.</summary>
+    private void UpdateEditWave()
+    {
+        if (_win == null || !_p.IsAudioOnly) return;
+        // nothing cut or joined yet: the song's own waveform stays as it was
+        _win.ShowEditWave(PlaybackUrl() == _p.Clips[0].Path ? null : Timeline.EditedWave());
     }
 
     private void UpdateInfo()
@@ -674,7 +750,7 @@ public partial class VideoEditor : UserControl
 
     private void ShowRow(FrameworkElement row)
     {
-        foreach (var r in new FrameworkElement[] { ToolsRow, TextRow, ItemRow, FormatRow })
+        foreach (var r in new FrameworkElement[] { ToolsRow, Caption, ItemRow, FormatRow })
             r.Visibility = ReferenceEquals(r, row) ? Visibility.Visible : Visibility.Collapsed;
     }
 
@@ -689,13 +765,8 @@ public partial class VideoEditor : UserControl
             if (o is TextOverlay t)
             {
                 _format = false;
-                ShowRow(TextRow);
-                if (TextEdit.Text != t.Text) TextEdit.Text = t.Text;
-                StyleStroke.IsChecked = t.Style == CaptionStyle.Stroke;
-                StyleFill.IsChecked = t.Style == CaptionStyle.Fill;
-                StyleNone.IsChecked = t.Style == CaptionStyle.None;
-                TextSize.Value = TextSizeTo(t.Size);
-                MarkSwatch(t.Color);
+                ShowRow(Caption);
+                Caption.Show(t);
             }
             else if (o is EmojiOverlay or BannerOverlay)
             {
@@ -741,7 +812,7 @@ public partial class VideoEditor : UserControl
         o.Size = ClampSize(o, size);
         if (final) _dragCommitted = false;
         _suppress = true;
-        if (o is TextOverlay) TextSize.Value = TextSizeTo(o.Size); else ItemSize.Value = ItemSizeTo(o);
+        if (o is TextOverlay) Caption.ShowSize(o.Size); else ItemSize.Value = ItemSizeTo(o);
         _suppress = false;
         UpdateLayer(force: true);
         if (o is BannerOverlay) UpdateBanner();
@@ -752,7 +823,7 @@ public partial class VideoEditor : UserControl
     private void OnLayerEditText(TextOverlay t)
     {
         Select(t);
-        Dispatcher.BeginInvoke(new Action(() => { TextEdit.Focus(); TextEdit.SelectAll(); }), System.Windows.Threading.DispatcherPriority.Input);
+        Caption.FocusText();
     }
 
     private void OnVideoPanned(double cx, double cy, bool final)
@@ -786,7 +857,7 @@ public partial class VideoEditor : UserControl
             o.End = Math.Max(o.Start + 0.1, S(f1));
         }
         _p.Changed();
-        Timeline.Rebuild();
+        Timeline.Rebuild(nextFrame: !final);
         if (final)
         {
             _dragCommitted = false;
@@ -812,7 +883,7 @@ public partial class VideoEditor : UserControl
                 _loaded = "%raw%" + clip.Path;
                 _mpv.Command("loadfile", clip.Path, "replace", "-1", $"start={N(t)},pause=yes");
             }
-            else _mpv.CommandAsync("seek", N(t), "absolute+keyframes");
+            else MpvSeek(t, final: false);
             return;
         }
         Commit();
@@ -902,6 +973,7 @@ public partial class VideoEditor : UserControl
         if (_p.IsAudioOnly) return;
         Commit();
         var (cw, ch) = _p.CanvasSize();
+        double size = Captions.DefaultSize(cw, ch);
         var t = new TextOverlay
         {
             Text = L.T("Edit.Placeholder"),
@@ -909,96 +981,48 @@ public partial class VideoEditor : UserControl
             End = _p.SourceLength,
             X = 0.5,
             Y = 0.5,
-            Size = 0.036 * Math.Max(1, cw / (double)ch > 1 ? 1.45 : 1),
+            Size = size,
+            WrapEm = Captions.WrapEmFor(size, cw, ch),
             Style = CaptionStyle.Stroke,
             Color = Colors.White,
         };
         _p.Overlays.Add(t);
         Select(t);
         Refresh(playback: false);
-        Dispatcher.BeginInvoke(new Action(() => { TextEdit.Focus(); TextEdit.SelectAll(); }), System.Windows.Threading.DispatcherPriority.Input);
+        Caption.FocusText();
     }
 
-    private void TextEdit_TextChanged(object sender, TextChangedEventArgs e)
+    // the caption tool (CaptionPanel, shared with the picture editor) reports what was chosen
+
+    private void OnCaptionText(string text)
     {
-        if (_suppress || _sel is not TextOverlay t) return;
+        if (_sel is not TextOverlay t) return;
         if (!_textCommitted) { Commit(); _textCommitted = true; }
-        t.Text = TextEdit.Text;
+        var (cw, ch) = _p.CanvasSize();
+        t.Text = text;
+        t.WrapEm = Captions.WrapEmFor(t.Size, cw, ch); // typing breaks lines at the frame's width; resizing later doesn't
         UpdateLayer(force: true);
         Timeline.Rebuild();
     }
 
-    private void TextEdit_PreviewKeyDown(object sender, KeyEventArgs e)
+    private void OnCaptionStyle(CaptionStyle style)
     {
-        if (e.Key == Key.Enter && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
-        {
-            int at = TextEdit.CaretIndex;
-            TextEdit.Text = TextEdit.Text.Insert(at, "\n");
-            TextEdit.CaretIndex = at + 1;
-            e.Handled = true;
-        }
-        else if (e.Key is Key.Enter or Key.Escape)
-        {
-            e.Handled = true;
-            Done_Click(this, new RoutedEventArgs());
-            Keyboard.Focus(_win);
-        }
-    }
-
-    private void Style_Checked(object sender, RoutedEventArgs e)
-    {
-        if (_suppress || _sel is not TextOverlay t || sender is not FrameworkElement { Tag: string tag }) return;
-        var style = Enum.Parse<CaptionStyle>(tag);
-        if (style == t.Style) return;
+        if (_sel is not TextOverlay t || style == t.Style) return;
         Commit();
         t.Style = style;
         UpdateLayer(force: true);
     }
 
-    private void BuildSwatches()
+    private void OnCaptionColor(Color color)
     {
-        var colors = new[] { Colors.White, Colors.Black, Captions.Palette[2], Captions.Palette[3], Captions.Palette[4], Captions.Palette[5], Captions.Palette[7], Captions.Palette[8], Captions.Palette[10] };
-        foreach (var c in colors)
-        {
-            var color = c;
-            var dot = new Border
-            {
-                Width = 20,
-                Height = 20,
-                CornerRadius = new CornerRadius(10),
-                Background = new SolidColorBrush(c),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(0x70, 255, 255, 255)),
-                BorderThickness = new Thickness(1),
-                Margin = new Thickness(2),
-                Cursor = Cursors.Hand,
-                Tag = c,
-            };
-            dot.MouseLeftButtonUp += (_, _) =>
-            {
-                if (_sel is not TextOverlay t || t.Color == color) return;
-                Commit();
-                t.Color = color;
-                MarkSwatch(color);
-                UpdateLayer(force: true);
-            };
-            Swatches.Children.Add(dot);
-        }
-    }
-
-    private void MarkSwatch(Color c)
-    {
-        foreach (Border b in Swatches.Children)
-        {
-            bool on = b.Tag is Color x && x == c;
-            b.BorderThickness = new Thickness(on ? 2.5 : 1);
-            b.BorderBrush = on ? Brushes.White : new SolidColorBrush(Color.FromArgb(0x70, 255, 255, 255));
-        }
+        if (_sel is not TextOverlay t || t.Color == color) return;
+        Commit();
+        t.Color = color;
+        UpdateLayer(force: true);
     }
 
     // ---- sizes (sliders are 0..1)
 
-    private static double TextSizeFrom(double v) => 0.018 + v * (0.14 - 0.018);
-    private static double TextSizeTo(double s) => Math.Clamp((s - 0.018) / (0.14 - 0.018), 0, 1);
     private static double ItemSizeFrom(double v) => v;
     private double ItemSizeTo(EditOverlay o) => o is BannerOverlay ? Math.Clamp((o.Size - 0.25) / (1.4 - 0.25), 0, 1) : Math.Clamp((o.Size - 0.04) / (0.6 - 0.04), 0, 1);
     private static double ZoomFrom(double v) => 0.4 * Math.Pow(10, v);
@@ -1024,34 +1048,6 @@ public partial class VideoEditor : UserControl
         if (final) _dragCommitted = false;
         UpdateLayer(force: true);
         if (_sel is BannerOverlay) UpdateBanner();
-    }
-
-    // ---- emoji
-
-    private async void Emoji_Click(object sender, RoutedEventArgs e)
-    {
-        EmojiPopup.IsOpen = true;
-        await Picker.LoadAsync();
-    }
-
-    private void OnEmojiPicked(AppleEmoji.Entry entry)
-    {
-        EmojiPopup.IsOpen = false;
-        Commit();
-        var (cw, ch) = _p.CanvasSize();
-        var o = new EmojiOverlay
-        {
-            Unified = entry.Unified,
-            Start = 0,
-            End = _p.SourceLength,
-            X = 0.5,
-            Y = 0.42,
-            Size = 0.16 * Math.Min(cw, ch) / ch,
-        };
-        _p.Overlays.Add(o);
-        _ = AppleEmoji.ImageAsync(entry.Unified).ContinueWith(_ => Dispatcher.InvokeAsync(() => { UpdateLayer(force: true); Timeline.Rebuild(); }));
-        Select(o);
-        Refresh(playback: false);
     }
 
     // ---- banner
@@ -1095,7 +1091,7 @@ public partial class VideoEditor : UserControl
         };
         _p.Overlays.Add(b);
         if (info.HasAudio && !_bannerWav.ContainsKey(info.Path))
-            _ = Banners.AudioAsync(info).ContinueWith(t => Dispatcher.InvokeAsync(() => { if (t.Result is string w) _bannerWav[info.Path] = w; }));
+            _ = Banners.AudioAsync(info).ContinueWith(t => Dispatcher.InvokeAsync(() => { if (t.IsCompletedSuccessfully && t.Result is string w) _bannerWav[info.Path] = w; }));
         Select(b);
         Refresh(playback: true);
     }
@@ -1260,7 +1256,7 @@ public partial class VideoEditor : UserControl
     internal void TestAddText(string text)
     {
         AddText();
-        TextEdit.Text = text;
+        Caption.TestType(text);
         Done_Click(this, new RoutedEventArgs());
     }
     internal void TestFormat(CanvasFormat f)
@@ -1270,12 +1266,20 @@ public partial class VideoEditor : UserControl
     }
     internal void TestSelect(EditOverlay? o) => Select(o);
     internal void TestDone() => Done_Click(this, new RoutedEventArgs());
-    internal void TestOpenEmoji() => Emoji_Click(this, new RoutedEventArgs());
-    internal bool TestEmojiReady => Picker.Ready;
+    internal void TestOpenEmoji()
+    {
+        if (_sel is not TextOverlay) AddText();
+        Caption.TestOpenEmoji();
+    }
+    internal bool TestEmojiReady => Caption.EmojiReady;
+    /// <summary>An emoji picked in the gallery; on a fresh caption it replaces the placeholder - a sticker.</summary>
     internal void TestPickEmoji(string unified)
     {
         var e = AppleEmoji.Catalog?.FirstOrDefault(x => x.Unified == unified);
-        if (e != null) OnEmojiPicked(e);
+        if (e == null) return;
+        if (_sel is not TextOverlay) AddText();
+        Caption.TestPick(e);
+        if (_sel is TextOverlay t && t.Text == e.Text) t.Style = CaptionStyle.None;
     }
     /// <summary>The panel for a picture of it (render-ui): an edit drawn in, no player behind it.</summary>
     internal void TestStatic(EditProject p, EditOverlay? sel, bool format, double position)
@@ -1309,7 +1313,7 @@ public partial class VideoEditor : UserControl
 
     internal bool HandleKey(KeyEventArgs e)
     {
-        if (TextEdit.IsKeyboardFocusWithin) return false;
+        if (Caption.IsTyping) return false;
         var mods = Keyboard.Modifiers;
         bool ctrl = mods.HasFlag(ModifierKeys.Control), shift = mods.HasFlag(ModifierKeys.Shift);
         double frame = 1 / EditExport.OutputFps(_p);
@@ -1352,7 +1356,7 @@ public partial class VideoEditor : UserControl
         if (_saving) return false;
         if (!_dirty || _undo.Count == 0) return true;
         if (_playing) TogglePlay();
-        return MessageBox.Show(Window.GetWindow(this)!, L.T("Edit.Discard"), "LinearFrame", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes;
+        return AlertWindow.Ask(Window.GetWindow(this), L.T("Edit.Discard"), L.T("Edit.DiscardText"), L.T("Common.Discard"), dark: true);
     }
 
     private void SaveNew_Click(object sender, RoutedEventArgs e) => _ = Save(replace: false);
@@ -1370,6 +1374,7 @@ public partial class VideoEditor : UserControl
         string target = replace ? Path.Combine(dir, name + ext) : ImageIO.UniquePath(dir, $"{name} ({L.T(copy ? "Player.TrimmedSuffix" : "Edit.EditedSuffix")})", ext);
         string output = replace ? Path.Combine(dir, $"{name}.lf-tmp{ext}") : target;
         _saving = true;
+        bool keepOutput = false; // once the original is gone, the new file is the only copy - it is never cleaned away
         SaveButtons.Visibility = Visibility.Collapsed;
         SaveProgress.Visibility = Visibility.Visible;
         SaveFill.Width = 0;
@@ -1378,7 +1383,7 @@ public partial class VideoEditor : UserControl
             var (ok, err) = await EditExport.SaveAsync(p, output, _keyframes, _reordered, new Progress<double>(v => SaveFill.Width = 150 * v), CancellationToken.None);
             if (!ok)
             {
-                MessageBox.Show(_win, L.F("Player.TrimFailed", err), "LinearFrame", MessageBoxButton.OK, MessageBoxImage.Warning);
+                AlertWindow.Tell(_win, L.T("Edit.SaveFailed"), err ?? "", dark: true);
                 return;
             }
             if (!replace)
@@ -1398,7 +1403,10 @@ public partial class VideoEditor : UserControl
                 Finished?.Invoke(keep, false);
                 return;
             }
-            if (File.Exists(target)) await Task.Run(() => ShellUtil.MoveToRecycleBin(target)); // e.g. a .mov replaced by an .mp4 of the same name
+            keepOutput = true;
+            // A .mov rendered into an .mp4, next to another file that already has that name: that one is somebody
+            // else's video - it stays where it is and the new file gets a name of its own.
+            if (File.Exists(target)) target = ImageIO.UniquePath(dir, name, ext);
             File.Move(output, target);
             try { File.SetCreationTime(target, created); } catch { /* not important */ }
             Finished?.Invoke(target, true);
@@ -1406,14 +1414,14 @@ public partial class VideoEditor : UserControl
         catch (Exception ex)
         {
             Log.Error("Edit save failed", ex);
-            MessageBox.Show(_win!, L.F("Player.TrimFailed", ex.Message), "LinearFrame", MessageBoxButton.OK, MessageBoxImage.Warning);
+            AlertWindow.Tell(_win, L.T("Edit.SaveFailed"), ex.Message, dark: true);
         }
         finally
         {
             _saving = false;
             SaveButtons.Visibility = Visibility.Visible;
             SaveProgress.Visibility = Visibility.Collapsed;
-            if (replace && File.Exists(output)) { try { File.Delete(output); } catch { /* ignore */ } }
+            if (replace && !keepOutput && File.Exists(output)) { try { File.Delete(output); } catch { /* ignore */ } }
         }
     }
 }

@@ -12,7 +12,7 @@
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display">
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="46" ResizeBorderThickness="6" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"/>
+        <WindowChrome CaptionHeight="46" ResizeBorderThickness="8" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"/>
     </WindowChrome.WindowChrome>
 
     <Grid TextElement.Foreground="{DynamicResource Brush.Text}">
@@ -60,6 +60,9 @@
                         </Button>
                         <Border Width="1" Margin="8,9" Background="{DynamicResource Brush.Separator}"/>
                     </StackPanel>
+                    <Button x:Name="TextBtn" Style="{StaticResource Btn.Icon}" ToolTip="{core:Loc Live.CopyAllTip}" Click="Text_Click" Visibility="Collapsed">
+                        <ui:IconView Icon="textscan"/>
+                    </Button>
                     <Button x:Name="CopyBtn" Style="{StaticResource Btn.Icon}" ToolTip="{core:Loc Viewer.Copy}" Click="Copy_Click">
                         <ui:IconView Icon="copy"/>
                     </Button>
@@ -77,6 +80,8 @@
 
         <!-- ================= The picture ================= -->
         <vw:ZoomImageView x:Name="View" Grid.Row="1"/>
+        <!-- buttons for QR codes in the picture (Live Text draws its selection between the picture and these) -->
+        <Canvas x:Name="QrPills" Grid.Row="1" ClipToBounds="True"/>
 
         <StackPanel x:Name="MessageView" Grid.Row="1" Visibility="Collapsed" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="24">
             <ui:IconView Icon="image" Width="46" Height="46" StrokeWidth="1.4" Foreground="{DynamicResource Brush.TextTertiary}" HorizontalAlignment="Center"/>

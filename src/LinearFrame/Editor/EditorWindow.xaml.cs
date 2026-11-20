@@ -8,6 +8,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using LinearFrame.Core;
 using LinearFrame.Imaging;
+using LinearFrame.Player.Edit;
 using LinearFrame.UI;
 
 namespace LinearFrame.Editor;
@@ -25,9 +26,8 @@ public partial class EditorWindow : Window
     private readonly MarkupDocument _doc;
     private readonly AppSettings _s;
     private double _widthFactor = 1.8;     // thin 1 / medium 1.8 / thick 3.2 (× BaseUnit)
-    private TextBox? _textBox;
-    private TextAnnotation? _textAnn;
-    private bool _textIsNew;
+    private CaptionAnnotation? _caption;   // the caption the caption tool shows
+    private bool _captionTyped, _captionSized;
     private bool _busy;
     private bool _closingConfirmed;
     private bool _initialFitDone;
@@ -47,12 +47,22 @@ public partial class EditorWindow : Window
         View.Changed += OnDocChanged;
         View.SelectionChanged += OnSelectionChanged;
         View.ZoomChanged += UpdateStatus;
-        View.TextEditRequested += BeginTextEdit;
+        View.CaptionEditRequested += EditCaption;
+        View.CaptionResized += c => { if (ReferenceEquals(c, _caption)) Caption.ShowSize(c.Size); };
+        Caption.TextEdited += OnCaptionText;
+        Caption.StyleChosen += style => ChangeCaption(c => c.Style = style);
+        Caption.ColorChosen += color => ChangeCaption(c => c.Color = color);
+        Caption.SizeChosen += OnCaptionSize;
+        Caption.DeleteRequested += () => { View.DeleteSelected(); OnDocChanged(); };
+        Caption.Finished += FinishCaption;
+        Caption.Redraw += View.RenderAll;
         View.CropFrameChanged += UpdateStatus;
         View.ColorPicked += OnColorPicked;
 
         BuildPalette();
         BuildWidths();
+        PopupToggle.Attach(ColorPopup, ColorBtn);
+        PopupToggle.Attach(WidthPopup, WidthBtn);
         BuildRatios();
         ToolArrow.IsChecked = true;
         UpdateTitle();
@@ -89,7 +99,6 @@ public partial class EditorWindow : Window
     private void Tool_Checked(object sender, RoutedEventArgs e)
     {
         if (View == null || sender is not FrameworkElement fe || fe.Tag is not string tag) return;
-        CommitText();
         View.Tool = Enum.Parse<ToolKind>(tag);
         if (View.Tool != ToolKind.Select) View.Select(null);
         View.Cursor = View.Tool switch { ToolKind.Select => Cursors.Arrow, ToolKind.Text => Cursors.IBeam, _ => Cursors.Cross };
@@ -103,9 +112,6 @@ public partial class EditorWindow : Window
             ToolKind.Pen => ToolPen,
             ToolKind.Highlighter => ToolHighlighter,
             ToolKind.Arrow => ToolArrow,
-            ToolKind.Line => ToolLine,
-            ToolKind.Rect => ToolRect,
-            ToolKind.Ellipse => ToolEllipse,
             ToolKind.Text => ToolText,
             ToolKind.Counter => ToolCounter,
             ToolKind.Pixelate => ToolPixelate,
@@ -136,9 +142,8 @@ public partial class EditorWindow : Window
     {
         View.CurrentColor = c;
         ColorDot.Fill = new SolidColorBrush(c);
-        if (_textBox != null) _textBox.Foreground = new SolidColorBrush(c);
-        if (_textAnn != null) _textAnn.Color = c;
         if (View.Selected != null) View.ApplyStyleToSelection(color: true, width: false);
+        if (View.Selected is CaptionAnnotation caption) Caption.Show(caption);
     }
 
     private void BuildWidths()
@@ -156,115 +161,104 @@ public partial class EditorWindow : Window
                 WidthPopup.IsOpen = false;
                 _widthFactor = f;
                 View.CurrentWidth = f * _doc.BaseUnit;
-                if (_textAnn != null && _textBox != null)
-                {
-                    _textAnn.Width = View.CurrentWidth;
-                    _textBox.FontSize = _textAnn.FontSize * View.ViewScale;
-                }
                 if (View.Selected != null) View.ApplyStyleToSelection(color: false, width: true);
             };
             WidthList.Children.Add(b);
         }
     }
 
-    private void Color_Click(object sender, RoutedEventArgs e) => ColorPopup.IsOpen = true;
-    private void Width_Click(object sender, RoutedEventArgs e) => WidthPopup.IsOpen = true;
+    private void Color_Click(object sender, RoutedEventArgs e) { if (!PopupToggle.JustClosed(ColorBtn)) ColorPopup.IsOpen = true; }
+    private void Width_Click(object sender, RoutedEventArgs e) { if (!PopupToggle.JustClosed(WidthBtn)) WidthPopup.IsOpen = true; }
 
     private void OnSelectionChanged()
     {
-        if (View.Selected is Annotation a)
+        if (View.Selected is CaptionAnnotation c) ShowCaption(c);
+        else
         {
-            View.CurrentColor = a.Color;
-            ColorDot.Fill = new SolidColorBrush(a.Color);
+            HideCaption();
+            if (View.Selected is Annotation a)
+            {
+                View.CurrentColor = a.Color;
+                ColorDot.Fill = new SolidColorBrush(a.Color);
+            }
         }
     }
 
-    // =============================================================== text
+    // =============================================================== captions
 
-    private void BeginTextEdit(TextAnnotation ann, bool isNew)
+    /// <summary>The Text tool made a new caption (it joins the picture) or a caption was clicked: into the caption tool.</summary>
+    private void EditCaption(CaptionAnnotation c, bool isNew)
     {
-        CommitText();
-        if (!isNew) _doc.Checkpoint();
-        _textAnn = ann;
-        _textIsNew = isNew;
-        ann.Editing = true;
+        if (isNew)
+        {
+            _doc.Checkpoint();
+            _doc.Items.Add(c);
+            View.Refresh();
+            OnDocChanged();
+        }
+        View.Select(c);
+        Caption.FocusText();
+    }
+
+    private void ShowCaption(CaptionAnnotation c)
+    {
+        if (!ReferenceEquals(c, _caption))
+        {
+            _caption = c;
+            _captionTyped = _captionSized = false;
+        }
+        Caption.Show(c);
+        CaptionBar.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>The caption tool goes away; a caption left without text goes with it.</summary>
+    private void HideCaption()
+    {
+        Caption.CloseEmoji();
+        CaptionBar.Visibility = Visibility.Collapsed;
+        var c = _caption;
+        _caption = null;
+        if (c != null && string.IsNullOrWhiteSpace(c.Text) && _doc.Items.Remove(c))
+        {
+            View.Refresh();
+            OnDocChanged();
+        }
+    }
+
+    private void FinishCaption()
+    {
+        View.Select(null);
+        View.Focus();
+    }
+
+    private void OnCaptionText(string text)
+    {
+        if (_caption == null) return;
+        if (!_captionTyped) { _doc.Checkpoint(); _captionTyped = true; }
+        _caption.Text = text;
+        // typing breaks lines at the picture's width; making it bigger later only scales it
+        _caption.WrapEm = Captions.WrapEmFor(_caption.Size, _caption.CanvasWidth, _caption.CanvasHeight);
         View.RenderAll();
-
-        double vs = View.ViewScale;
-        var tb = new TextBox
-        {
-            Text = ann.Text,
-            FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"),
-            FontWeight = FontWeights.SemiBold,
-            FontSize = Math.Max(6, ann.FontSize * vs),
-            Foreground = new SolidColorBrush(ann.Color),
-            Background = Brushes.Transparent,
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(0),
-            AcceptsReturn = true,
-            MinWidth = 40,
-            CaretBrush = new SolidColorBrush(ann.Color),
-            SelectionBrush = new SolidColorBrush(Color.FromRgb(0x0A, 0x84, 0xFF)),
-            FocusVisualStyle = null,
-        };
-        tb.Template = BareTextBoxTemplate();
-        var host = new Border
-        {
-            Child = tb,
-            BorderThickness = new Thickness(1),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(0xB0, 0x0A, 0x84, 0xFF)),
-            Padding = new Thickness(2, 0, 2, 0),
-            Margin = new Thickness(-3, -1, 0, 0),
-        };
-        var p = View.ToView(ann.Position);
-        Canvas.SetLeft(host, p.X);
-        Canvas.SetTop(host, p.Y);
-        TextLayer.Children.Add(host);
-        tb.PreviewKeyDown += (_, e) =>
-        {
-            if (e.Key == Key.Escape || (e.Key == Key.Enter && !Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)))
-            {
-                e.Handled = true;
-                CommitText();
-                View.Focus();
-            }
-        };
-        tb.LostKeyboardFocus += (_, _) => Dispatcher.BeginInvoke(new Action(CommitText));
-        _textBox = tb;
-        Dispatcher.BeginInvoke(new Action(() => { tb.Focus(); tb.CaretIndex = tb.Text.Length; }), System.Windows.Threading.DispatcherPriority.Input);
-    }
-
-    private static ControlTemplate BareTextBoxTemplate()
-    {
-        var t = new ControlTemplate(typeof(TextBox));
-        var host = new FrameworkElementFactory(typeof(ScrollViewer)) { Name = "PART_ContentHost" };
-        host.SetValue(ScrollViewer.HorizontalScrollBarVisibilityProperty, ScrollBarVisibility.Hidden);
-        host.SetValue(ScrollViewer.VerticalScrollBarVisibilityProperty, ScrollBarVisibility.Hidden);
-        t.VisualTree = host;
-        return t;
-    }
-
-    private void CommitText()
-    {
-        if (_textBox == null || _textAnn == null) return;
-        var tb = _textBox;
-        var ann = _textAnn;
-        _textBox = null;
-        _textAnn = null;
-        TextLayer.Children.Clear();
-        ann.Editing = false;
-        ann.Text = tb.Text.TrimEnd();
-        if (_textIsNew)
-        {
-            if (!string.IsNullOrWhiteSpace(ann.Text))
-            {
-                _doc.Checkpoint();
-                _doc.Items.Add(ann);
-            }
-        }
-        else if (string.IsNullOrWhiteSpace(ann.Text)) _doc.Items.Remove(ann);
-        View.Refresh();
         OnDocChanged();
+    }
+
+    private void ChangeCaption(Action<CaptionAnnotation> change)
+    {
+        if (_caption == null) return;
+        _doc.Checkpoint();
+        change(_caption);
+        View.RenderAll();
+        OnDocChanged();
+    }
+
+    private void OnCaptionSize(double size, bool final)
+    {
+        if (_caption == null) return;
+        if (!_captionSized) { _doc.Checkpoint(); _captionSized = true; }
+        _caption.Size = size;
+        if (final) _captionSized = false;
+        View.RenderAll();
+        if (final) OnDocChanged();
     }
 
     // =============================================================== crop & extend
@@ -307,7 +301,6 @@ public partial class EditorWindow : Window
 
     private void EnterCrop()
     {
-        CommitText();
         View.EnterCrop();
         CropToggle.IsChecked = true;
         CropBar.Visibility = Visibility.Visible;
@@ -402,14 +395,14 @@ public partial class EditorWindow : Window
 
     private void DoUndo()
     {
-        CommitText();
+        View.Select(null);
         if (View.CropMode) { View.CancelCrop(); ExitCropUi(); }
         if (_doc.Undo()) { View.Refresh(); OnDocChanged(); Dispatcher.BeginInvoke(new Action(FitZoom)); }
     }
 
     private void DoRedo()
     {
-        CommitText();
+        View.Select(null);
         if (View.CropMode) { View.CancelCrop(); ExitCropUi(); }
         if (_doc.Redo()) { View.Refresh(); OnDocChanged(); Dispatcher.BeginInvoke(new Action(FitZoom)); }
     }
@@ -452,15 +445,31 @@ public partial class EditorWindow : Window
                           Scroller.ViewportHeight > 0 ? Scroller.ViewportHeight : Scroller.ActualHeight);
         if (vp.Width <= 0) return;
         View.SetZoom(View.FitZoom(vp));
-        RepositionText();
         UpdateStatus();
     }
 
-    private void SetZoom(double z)
+    /// <summary>
+    /// Zoom that keeps the spot under the cursor (<paramref name="at"/>, in the scroll area) - or the middle of the view -
+    /// where it is, instead of everything sliding away to the top-left corner.
+    /// </summary>
+    private void SetZoom(double z, Point? at = null)
     {
         _autoFit = false;
-        CommitText();
+        var anchor = at ?? new Point(Scroller.ViewportWidth / 2, Scroller.ViewportHeight / 2);
+        // which spot of the picture is there now, as a share of its size...
+        double fx = 0.5, fy = 0.5;
+        if (View.ActualWidth > 0 && View.ActualHeight > 0)
+        {
+            var p = Scroller.TranslatePoint(anchor, View);
+            fx = p.X / View.ActualWidth;
+            fy = p.Y / View.ActualHeight;
+        }
         View.SetZoom(z);
+        Scroller.UpdateLayout();
+        // ...and the same spot scrolled back under it (a picture smaller than the view simply stays centred)
+        var q = View.TranslatePoint(new Point(fx * View.ActualWidth, fy * View.ActualHeight), Scroller);
+        Scroller.ScrollToHorizontalOffset(Scroller.HorizontalOffset + q.X - anchor.X);
+        Scroller.ScrollToVerticalOffset(Scroller.VerticalOffset + q.Y - anchor.Y);
         UpdateStatus();
     }
 
@@ -472,17 +481,7 @@ public partial class EditorWindow : Window
     {
         if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) return;
         e.Handled = true;
-        SetZoom(View.Zoom * (e.Delta > 0 ? 1.15 : 1 / 1.15));
-    }
-
-    private void RepositionText()
-    {
-        if (_textBox == null || _textAnn == null || TextLayer.Children.Count == 0) return;
-        var host = (FrameworkElement)TextLayer.Children[0];
-        var p = View.ToView(_textAnn.Position);
-        Canvas.SetLeft(host, p.X);
-        Canvas.SetTop(host, p.Y);
-        _textBox.FontSize = Math.Max(6, _textAnn.FontSize * View.ViewScale);
+        SetZoom(View.Zoom * Math.Pow(1.0018, e.Delta), e.GetPosition(Scroller)); // one notch ≈ ×1.24, like the picture viewer
     }
 
     // =============================================================== output
@@ -513,7 +512,6 @@ public partial class EditorWindow : Window
 
     private async Task<BitmapSource?> RenderOutput()
     {
-        CommitText();
         if (View.CropMode) { View.ApplyCrop(); ExitCropUi(); }
         if (_busy) return null;
         _busy = true;
@@ -527,7 +525,7 @@ public partial class EditorWindow : Window
         catch (Exception ex)
         {
             Log.Error("Export failed", ex);
-            MessageBox.Show(this, ex.Message, "LinearFrame", MessageBoxButton.OK, MessageBoxImage.Warning);
+            AlertWindow.Tell(this, L.T("Editor.RenderFailed"), ex.Message);
             return null;
         }
         finally
@@ -578,7 +576,7 @@ public partial class EditorWindow : Window
         catch (Exception ex)
         {
             Log.Error("Done failed", ex);
-            MessageBox.Show(this, ex.Message, "LinearFrame", MessageBoxButton.OK, MessageBoxImage.Warning);
+            AlertWindow.Tell(this, L.T("Editor.SaveFailed"), ex.Message);
         }
     }
 
@@ -614,17 +612,15 @@ public partial class EditorWindow : Window
 
     private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
-        CommitText();
         if (_closingConfirmed || !_doc.Dirty) return;
-        var r = MessageBox.Show(this, L.T("Editor.Unsaved"), "LinearFrame", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
-        if (r != MessageBoxResult.Yes) e.Cancel = true;
+        if (!AlertWindow.Ask(this, L.T("Editor.Unsaved"), L.T("Editor.UnsavedText"), L.T("Common.Discard"))) e.Cancel = true;
     }
 
     // =============================================================== keyboard
 
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
-        if (_textBox != null && _textBox.IsKeyboardFocusWithin) { base.OnPreviewKeyDown(e); return; }
+        if (Caption.IsTyping) { base.OnPreviewKeyDown(e); return; }
         var mods = Keyboard.Modifiers;
         bool ctrl = mods.HasFlag(ModifierKeys.Control), shift = mods.HasFlag(ModifierKeys.Shift);
         bool handled = true;
@@ -651,9 +647,6 @@ public partial class EditorWindow : Window
             case Key.P when !ctrl: SetTool(ToolKind.Pen); break;
             case Key.H when !ctrl: SetTool(ToolKind.Highlighter); break;
             case Key.A when !ctrl: SetTool(ToolKind.Arrow); break;
-            case Key.L when !ctrl: SetTool(ToolKind.Line); break;
-            case Key.R when !ctrl: SetTool(ToolKind.Rect); break;
-            case Key.O when !ctrl: SetTool(ToolKind.Ellipse); break;
             case Key.T when !ctrl: SetTool(ToolKind.Text); break;
             case Key.N when !ctrl: SetTool(ToolKind.Counter); break;
             case Key.B when !ctrl: SetTool(ToolKind.Pixelate); break;

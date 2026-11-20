@@ -31,6 +31,13 @@ internal static class AppPaths
     /// </summary>
     public static string Instance { get; } = (Environment.GetEnvironmentVariable("LINEARFRAME_INSTANCE") ?? "").Trim();
 
+    /// <summary>
+    /// LINEARFRAME_GHOST=1 (test copies only): every window stays out of sight and never takes the focus - what happens
+    /// when a file is opened can then be checked on the real thing (sizes, timing, the log) while somebody is using
+    /// the computer, even playing full screen.
+    /// </summary>
+    public static bool Ghost { get; } = Instance.Length > 0 && Environment.GetEnvironmentVariable("LINEARFRAME_GHOST") == "1";
+
     /// <summary>Only the real, installed app registers itself with Windows (autostart, Start menu entry).</summary>
     public static bool RegistersWithWindows => !IsDevBuild && Instance.Length == 0;
 

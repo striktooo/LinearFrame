@@ -40,8 +40,22 @@ public partial class PlayerWindow : Window
     private CancellationTokenSource? _waveCts;
     private bool _waveDragging;
 
+    // A new player window stays out of sight until it is what it is going to be: in its place, the size of its film,
+    // the first picture drawn. It used to put itself together in front of you - the control layer somewhere on the
+    // screen, an empty black window in the middle, then that window jumping to the film's size.
+    private bool _cloaked;
+    private bool _laidOut;      // the window has its size for the file being opened
+    private bool _gotPicture;   // ...and the player the first picture of it
+    private bool _revealing;
+    private bool _editPending;  // a new window opened straight into the editor: it shows itself with the editor in it
+    private long _askedAt;      // when the file was asked for
+    private long _engineMs = -1, _loadedMs = -1, _pictureMs = -1; // ...and how long after that each step was done (for the log)
+    private System.Windows.Threading.DispatcherTimer? _revealTimer;
+    /// <summary>Longest a new window waits for its film before it shows itself as it is (a slow disk, a broken file).</summary>
+    private const int RevealAfterMs = 1500;
+
     public IntPtr Handle => _hwnd;
-    public bool IsPaused => _mpv?.Paused ?? true;
+    public bool IsPaused => (_mpv?.Paused ?? true) && !_resumeAfterScrub;
 
     public PlayerWindow()
     {
@@ -53,6 +67,8 @@ public partial class PlayerWindow : Window
         SourceInitialized += (_, _) =>
         {
             _hwnd = new WindowInteropHelper(this).Handle;
+            Native.SetCloak(_hwnd, true);
+            _cloaked = true;
             HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
         };
         Loaded += OnLoaded;
@@ -77,11 +93,16 @@ public partial class PlayerWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        _overlay = new PlayerOverlay(this) { Owner = this };
+        _overlay = new PlayerOverlay(this) { Owner = this, StartCloaked = true };
         _overlay.ControlsVisibilityChanged += UpdateTimeInterest;
         _overlay.Show();
         UpdateOverlayBounds();
         UpdateOverlayModes();
+        // whatever happens to the file, the window never stays out of sight
+        _revealTimer = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Normal) { Interval = TimeSpan.FromMilliseconds(RevealAfterMs) };
+        _revealTimer.Tick += (_, _) => Reveal("still waiting for the file");
+        _revealTimer.Start();
+        if (_askedAt == 0) _askedAt = Environment.TickCount64;
 
         if (!MpvNative.TryLoad(out var err))
         {
@@ -95,7 +116,9 @@ public partial class PlayerWindow : Window
             _mpv.FileLoaded += OnFileLoaded;
             _mpv.EndFile += OnEndFile;
             _mpv.VideoReconfig += OnVideoReconfig;
+            _mpv.SeekLanded += OnSeekLanded;
             UpdateTimeInterest();
+            _engineMs = Environment.TickCount64 - _askedAt;
         }
         catch (Exception ex)
         {
@@ -121,6 +144,8 @@ public partial class PlayerWindow : Window
     {
         if (_editMode) Editor.End(reloadOriginal: false);
         _waveCts?.Cancel();
+        _revealTimer?.Stop();
+        _pictureLog?.Stop();
         if (_mpv != null)
         {
             _s.PlayerVolume = _mpv.Volume;
@@ -140,11 +165,11 @@ public partial class PlayerWindow : Window
         // another file while editing: unsaved changes are not thrown away without asking
         if (_editMode && !Editor.ConfirmLeave()) { WindowHelper.BringToFront(this); return; }
         _editWhenLoaded = edit || cut;
+        _askedAt = Environment.TickCount64;
         if (!IsLoaded || _mpv == null)
         {
             _pendingOpen = path;
-            if (!IsVisible) Show();
-            WindowHelper.BringToFront(this);
+            WindowHelper.BringToFront(this); // (shows it - out of sight until its film is there, see Reveal)
             return;
         }
         Load(path);
@@ -158,12 +183,16 @@ public partial class PlayerWindow : Window
         _isAudio = MediaFormats.IsAudio(path);
         _hasVideo = !_isAudio;
         _layoutForNewFile = true;
+        _laidOut = _gotPicture = false;
         Title = $"{Path.GetFileName(path)} — LinearFrame";
         _overlay?.SetTitle(Path.GetFileName(path));
         MessageView.Visibility = Visibility.Collapsed;
         ApplyAudioMode(_isAudio);
         _waveCts?.Cancel();
         _waveDragging = false;
+        _resumeAfterScrub = false;
+        _scrub?.Jumped(-1);
+        _filePeaks = _editPeaks = null;
         Wave.SetPeaks(null);
         Wave.Hover = null;
         Wave.Position = 0;
@@ -173,8 +202,32 @@ public partial class PlayerWindow : Window
         // an animated GIF / WebP plays in a loop, like everywhere else
         _mpv?.SetProperty("loop-file", MediaFormats.IsAnimatedImage(path) ? "inf" : "no");
         _mpv?.Command("loadfile", path, "replace");
-        _mpv?.SetProperty("pause", "no");
+        // asked for, not waited for: the player is busy opening the file for the next few hundred ms, and waiting for
+        // its answer here kept the whole window from doing anything meanwhile
+        _mpv?.CommandAsync("set", "pause", "no");
         UpdateOverlayModes();
+        if (_isAudio)
+        {
+            // A song's window needs nothing from the file to be laid out: it is there at once - under the file's name;
+            // the title, the cover and the waveform fill in as they are read.
+            AudioTitle.Text = Path.GetFileNameWithoutExtension(path);
+            AudioArtist.Text = "";
+            AudioArtist.Visibility = Visibility.Collapsed;
+            ArtImageHost.Visibility = Visibility.Collapsed;
+            ArtIcon.Visibility = Visibility.Visible;
+            // (as the next thing this thread does, not here: a window that is just being shown for the first time
+            // is put back to its own size by WPF when this is done inside its Loaded event)
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_path != path || !_isAudio) return;
+                if (_layoutForNewFile && !_fullscreen && WindowState == WindowState.Normal) ResizeForContent(680, 500);
+                _layoutForNewFile = false;
+                UpdateAudioLayout();
+                if (_editWhenLoaded) return; // going straight into the editor: the window waits for it (OnFileLoaded)
+                _laidOut = true;
+                TryReveal();
+            }));
+        }
     }
 
     private void ShowMessage(string text)
@@ -183,6 +236,9 @@ public partial class PlayerWindow : Window
         MessageView.Visibility = Visibility.Visible;
         _host.Visibility = Visibility.Collapsed;
         AudioView.Visibility = Visibility.Collapsed;
+        // nothing more is coming: the window shows what it has to say
+        _laidOut = _gotPicture = true;
+        TryReveal();
     }
 
     // =============================================================== mpv events
@@ -190,6 +246,9 @@ public partial class PlayerWindow : Window
     private void OnFileLoaded()
     {
         if (_mpv == null) return;
+        if (_loadedMs < 0) _loadedMs = Environment.TickCount64 - _askedAt;
+        // a new window going straight into the editor shows itself with the editor in it (see EnterEditMode)
+        if (_editWhenLoaded && _cloaked && !_editMode) _editPending = true;
         if (_editMode)
         {
             // the editor plays its own timeline (the kept pieces as one EDL) - nothing about the file changes
@@ -197,8 +256,10 @@ public partial class PlayerWindow : Window
             return;
         }
         var tracks = _mpv.Tracks();
+        bool namedAudio = _isAudio;
         _hasVideo = tracks.Any(t => t.Type == "video" && !t.AlbumArt);
         _isAudio = !_hasVideo;
+        if (namedAudio && !_isAudio) _layoutForNewFile = true; // a "song" by its name that has a picture after all: a film's window
         ApplyAudioMode(_isAudio);
         if (_isAudio)
         {
@@ -214,12 +275,31 @@ public partial class PlayerWindow : Window
             if (_layoutForNewFile && !_fullscreen && WindowState == WindowState.Normal) ResizeForContent(680, 500);
             _layoutForNewFile = false;
             UpdateAudioLayout();
+            _laidOut = true;
+            TryReveal();
+        }
+        else if (_layoutForNewFile && _path != null)
+        {
+            // The file says how big its picture is (and how the phone was held) before a single frame is decoded: the
+            // window takes the film's shape right away. The decoder has the last word a moment later (OnVideoReconfig).
+            var clip = ClipProbe.FromPlayer(_mpv, _path);
+            if (clip.HasVideo)
+            {
+                FitToVideo(clip.Width, clip.Height);
+                _laidOut = true;
+            }
         }
         UpdateOverlayModes();
         if (_editWhenLoaded)
         {
             _editWhenLoaded = false;
-            Dispatcher.BeginInvoke(new Action(EnterEditMode), System.Windows.Threading.DispatcherPriority.Background);
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                EnterEditMode();
+                if (_editMode || !_editPending) return;
+                _editPending = false; // (this file can't be edited: an ordinary player window then)
+                TryReveal();
+            }), System.Windows.Threading.DispatcherPriority.Background);
         }
     }
 
@@ -248,7 +328,8 @@ public partial class PlayerWindow : Window
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var peaks = await Ffmpeg.Waveform(path, 1200, duration, cts.Token);
             if (cts.IsCancellationRequested || path != _path) return;
-            Wave.SetPeaks(peaks);
+            _filePeaks = peaks;
+            if (_editPeaks == null) Wave.SetPeaks(peaks);
             Log.Info($"Waveform {(peaks == null ? "failed" : "ready")} in {sw.ElapsedMilliseconds} ms");
         }
         catch (OperationCanceledException) { }
@@ -315,24 +396,135 @@ public partial class PlayerWindow : Window
 
     public void WaveformHover(double? fraction) => Wave.Hover = fraction;
 
+    // the song's waveform, and the editor's waveform of the edit (the kept pieces) that replaces it while editing
+    private float[]? _filePeaks, _editPeaks;
+
+    /// <summary>While editing a song: the edit's waveform (null = the file's again).</summary>
+    internal void ShowEditWave(float[]? peaks)
+    {
+        _editPeaks = peaks;
+        var show = peaks ?? _filePeaks;
+        if (!ReferenceEquals(Wave.Peaks, show)) Wave.SetPeaks(show, animate: false);
+    }
+
     private void OnVideoReconfig()
     {
         if (_mpv == null || !_hasVideo) return;
-        long w = _mpv.GetLong("dwidth") ?? 0, h = _mpv.GetLong("dheight") ?? 0;
-        Log.Info($"Video {w}x{h} codec={_mpv.GetString("video-codec")} hwdec={_mpv.GetString("hwdec-current")} vo={_mpv.GetString("current-vo")}");
+        // The size of the film's own picture as it is shown: what the decoder puts out, turned the way the phone was
+        // held. Until the file's first frame is there the player only has the placeholder picture of an empty window
+        // (960x540, no "video-params") - taking that for the film (or half of it: one number old, one new) is what
+        // left a 9:16 video in a window of another shape, with black bars, for good.
+        long w = _mpv.GetLong("video-params/dw") ?? 0, h = _mpv.GetLong("video-params/dh") ?? 0;
         if (w <= 0 || h <= 0) return;
+        if ((_mpv.GetLong("video-params/rotate") ?? 0) % 180 != 0) (w, h) = (h, w);
         _aspect = w / (double)h;
-        if (_layoutForNewFile && !_fullscreen && WindowState == WindowState.Normal)
+        if (_layoutForNewFile)
         {
-            var work = WindowHelper.WorkAreaAtCursor(out double scale);
-            double maxW = work.Width / scale * 0.72, maxH = work.Height / scale * 0.72;
-            double vw = w / scale, vh = h / scale;
-            double k = Math.Min(1, Math.Min(maxW / vw, maxH / vh));
-            vw = Math.Max(MinWidth, vw * k);
-            vh = Math.Max(MinHeight, vw / _aspect);
-            ResizeForContent(vw, vh);
+            FitToVideo((int)w, (int)h);
+            _layoutForNewFile = false;
+            _laidOut = true;
+            TryReveal();
         }
-        _layoutForNewFile = false;
+        LogPictureSoon();
+    }
+
+    /// <summary>
+    /// The window takes the shape of the film (see <see cref="PlayerLayout"/>) in the middle of its screen - for a
+    /// window that is not on screen yet, the screen the mouse is on (where the file was opened).
+    /// </summary>
+    private void FitToVideo(int videoW, int videoH)
+    {
+        if (_hwnd == IntPtr.Zero || _fullscreen || _editMode || WindowState != WindowState.Normal || videoW <= 0 || videoH <= 0) return;
+        IntPtr mon;
+        if (_cloaked)
+        {
+            Native.GetCursorPos(out var cursor);
+            mon = Native.MonitorFromPoint(cursor, Native.MONITOR_DEFAULTTONEAREST);
+        }
+        else mon = Native.MonitorFromWindow(_hwnd, Native.MONITOR_DEFAULTTONEAREST);
+        var info = new Native.MONITORINFOEX { cbSize = Marshal.SizeOf<Native.MONITORINFOEX>() };
+        if (!Native.GetMonitorInfo(mon, ref info)) return;
+        double scale = Native.GetDpiForMonitor(mon, 0, out uint dpi, out _) == 0 && dpi > 0 ? dpi / 96.0 : 1;
+        var wa = info.rcWork;
+        var (w, h) = PlayerLayout.WindowFor(videoW, videoH, wa.Width, wa.Height, scale,
+            (int)Math.Ceiling(MinWidth * scale), (int)Math.Ceiling(MinHeight * scale));
+        int x = wa.Left + (wa.Width - w) / 2, y = wa.Top + (wa.Height - h) / 2;
+        Native.GetWindowRect(_hwnd, out var now);
+        if (now.Left == x && now.Top == y && now.Width == w && now.Height == h) return;
+        Native.SetWindowPos(_hwnd, IntPtr.Zero, x, y, w, h, Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
+    }
+
+    // ---- showing a new window once it is complete
+
+    private void TryReveal()
+    {
+        if (!_cloaked || _revealing || _editPending || !_laidOut || !(_gotPicture || _isAudio)) return;
+        _revealing = true;
+        // once the window and its control layer have been laid out and drawn at their size - and, for a film, a moment
+        // after its first picture was announced (it is on its way to the screen then)
+        var wait = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Loaded)
+            { Interval = TimeSpan.FromMilliseconds(_isAudio || MessageView.Visibility == Visibility.Visible ? 1 : 30) };
+        wait.Tick += (_, _) => { wait.Stop(); Reveal("complete"); };
+        wait.Start();
+    }
+
+    private void Reveal(string why)
+    {
+        _revealTimer?.Stop();
+        if (!_cloaked) return;
+        _cloaked = false;
+        UpdateOverlayBounds();
+        if (!AppPaths.Ghost) Native.SetCloak(_hwnd, false);
+        _overlay?.Uncloak();
+        Native.GetWindowRect(_hwnd, out var r);
+        Log.Info($"Player window shown {Environment.TickCount64 - _askedAt} ms after the file was asked for ({why}; player ready after {_engineMs}, file read {_loadedMs}, first picture {_pictureMs} ms): " +
+                 $"{r.Width}x{r.Height} at {r.Left},{r.Top}{(AppPaths.Ghost ? " [ghost: kept out of sight]" : "")}");
+        LogPictureSoon();
+    }
+
+    private System.Windows.Threading.DispatcherTimer? _pictureLog;
+
+    /// <summary>
+    /// One line per film once everything has settled: its picture, the window, and how much of the window the picture
+    /// leaves empty (the player's own numbers) - black bars show up here as numbers.
+    /// </summary>
+    private void LogPictureSoon()
+    {
+        if (_pictureLog == null)
+        {
+            _pictureLog = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
+            _pictureLog.Tick += (_, _) =>
+            {
+                _pictureLog.Stop();
+                if (_mpv == null || !_hasVideo || _hwnd == IntPtr.Zero) return;
+                long w = _mpv.GetLong("video-params/dw") ?? 0, h = _mpv.GetLong("video-params/dh") ?? 0;
+                if (w <= 0 || h <= 0) return;
+                long rot = _mpv.GetLong("video-params/rotate") ?? 0;
+                if (rot % 180 != 0) (w, h) = (h, w);
+                Native.GetWindowRect(_hwnd, out var r);
+                Native.GetWindowRect(_host.VideoHandle, out var v);
+                string bars = $"{_mpv.GetLong("osd-dimensions/ml")}/{_mpv.GetLong("osd-dimensions/mr")}/{_mpv.GetLong("osd-dimensions/mt")}/{_mpv.GetLong("osd-dimensions/mb")}";
+                string layer = "";
+                if (_overlay != null && Native.GetWindowRect(_overlay.Handle, out var o)) layer = $", controls layer {o.Width}x{o.Height} at {o.Left},{o.Top}";
+                Log.Info($"Video {w}x{h}{(rot != 0 ? $" (turned {rot}°)" : "")} codec={_mpv.GetString("video-codec")} hwdec={_mpv.GetString("hwdec-current")} vo={_mpv.GetString("current-vo")}: " +
+                         $"window {r.Width}x{r.Height} at {r.Left},{r.Top}, picture area {v.Width}x{v.Height}, empty left/right/top/bottom {bars}{layer}");
+            };
+        }
+        _pictureLog.Stop();
+        _pictureLog.Start();
+    }
+
+    /// <summary>The picture of a seek is on screen: the timeline under the hand may ask for the next one.</summary>
+    private void OnSeekLanded()
+    {
+        if (!_gotPicture)
+        {
+            _gotPicture = true;
+            if (_pictureMs < 0) _pictureMs = Environment.TickCount64 - _askedAt;
+            TryReveal();
+        }
+        _scrub?.Landed();
+        if (_editMode) Editor.OnSeekLanded();
     }
 
     private void OnEndFile(int reason, int error)
@@ -358,7 +550,8 @@ public partial class PlayerWindow : Window
         long now = Environment.TickCount64;
         bool pausedChanged = _mpv.Paused != _lastPaused;
         _lastPaused = _mpv.Paused;
-        if (_overlay != null && (_overlay.ControlsVisible || _mpv.Paused) && (pausedChanged || _mpv.Paused || now - _lastOverlayTick >= 250))
+        // while editing, the pill is away (the editor has its own controls): nothing to keep up to date 25 times a second
+        if (_overlay != null && !_editMode && (_overlay.ControlsVisible || _mpv.Paused) && (pausedChanged || _mpv.Paused || now - _lastOverlayTick >= 250))
         {
             _lastOverlayTick = now;
             RefreshOverlay();
@@ -374,7 +567,8 @@ public partial class PlayerWindow : Window
     public void RefreshOverlay()
     {
         if (_mpv == null || _overlay == null) return;
-        _overlay.UpdatePlayback(_mpv.TimePos, _mpv.Duration, _mpv.Paused, _mpv.Volume, _mpv.Muted);
+        // held for a press on the timeline only: the button keeps showing "playing"
+        _overlay.UpdatePlayback(_mpv.TimePos, _mpv.Duration, _mpv.Paused && !_resumeAfterScrub, _mpv.Volume, _mpv.Muted);
     }
 
     // =============================================================== layout / overlay
@@ -383,6 +577,23 @@ public partial class PlayerWindow : Window
     {
         AudioView.Visibility = audio ? Visibility.Visible : Visibility.Collapsed;
         _host.Visibility = audio ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>
+    /// A new video's window (DIPs): the video fitted into about two thirds of the screen, smaller ones enlarged (at most
+    /// twice), bigger ones shrunk - every file opens at a familiar, comfortable size whatever its resolution.
+    /// </summary>
+    private (double W, double H) DefaultVideoSize(double videoW, double videoH)
+    {
+        var work = WindowHelper.WorkAreaAtCursor(out double scale);
+        double boxW = work.Width / scale * 0.66, boxH = work.Height / scale * 0.78;
+        double aspect = videoW / videoH;
+        double k = Math.Min(2, Math.Min(boxW / videoW, boxH / videoH));
+        double w = videoW * k, h = videoH * k;
+        // a tall phone video still gets room for the controls
+        if (w < MinWidth) { w = MinWidth; h = Math.Min(boxH, w / aspect); }
+        if (h < MinHeight) h = MinHeight;
+        return (w, h);
     }
 
     private void ResizeForContent(double widthDip, double heightDip)
@@ -428,28 +639,41 @@ public partial class PlayerWindow : Window
                 UpdateOverlayBounds();
                 if (_editMode) Editor.OnMoved(); // the banner preview is a window of its own
                 break;
-            case Native.WM_SIZING:
-                if (_hasVideo && !_editMode && !_fullscreen) KeepAspect(wParam.ToInt32(), lParam);
-                break;
         }
         return IntPtr.Zero;
     }
 
-    /// <summary>Like QuickTime: resizing keeps the video's aspect ratio, so there are no black bars.</summary>
-    private void KeepAspect(int edge, IntPtr lParam)
+    /// <summary>
+    /// The top of the full-screen player pulled down: like a maximised window's title bar in Windows, it becomes a normal
+    /// window (its size from before, or the default for its video) right under the cursor and goes on moving with the
+    /// mouse. A maximised player is restored by Windows itself as the drag starts.
+    /// </summary>
+    public void DragOutOfFullscreen()
     {
-        var r = Marshal.PtrToStructure<Native.RECT>(lParam);
-        int w = r.Width, h = r.Height;
-        if (edge is Native.WMSZ_LEFT or Native.WMSZ_RIGHT) h = (int)Math.Round(w / _aspect);
-        else if (edge is Native.WMSZ_TOP or Native.WMSZ_BOTTOM) w = (int)Math.Round(h * _aspect);
-        else
+        if (_hwnd == IntPtr.Zero) return;
+        if (_fullscreen)
         {
-            if (w / (double)h > _aspect) h = (int)Math.Round(w / _aspect);
-            else w = (int)Math.Round(h * _aspect);
+            Native.GetCursorPos(out var cur);
+            Native.GetWindowRect(_hwnd, out var full);
+            double scale = WindowHelper.DpiScale(this);
+            int w = _restoreRect.Width, h = _restoreRect.Height;
+            if (w <= 0 || h <= 0 || w >= full.Width * 0.95)
+            {
+                var (dw, dh) = _hasVideo && _aspect > 0 ? DefaultVideoSize(1000 * _aspect, 1000) : (960.0, 560.0);
+                w = (int)Math.Round(dw * scale);
+                h = (int)Math.Round(dh * scale);
+            }
+            // the cursor keeps its place across the width, just below the top
+            double fx = (cur.X - full.Left) / (double)Math.Max(1, full.Width);
+            int x = cur.X - (int)Math.Round(fx * w), y = Math.Max(full.Top, cur.Y - (int)Math.Round(24 * scale));
+            _fullscreen = false;
+            var chrome = WindowChrome.GetWindowChrome(this);
+            if (chrome != null) chrome.ResizeBorderThickness = new Thickness(8);
+            Native.SetWindowPos(_hwnd, IntPtr.Zero, x, y, w, h, Native.SWP_FRAMECHANGED | Native.SWP_NOZORDER);
+            UpdateOverlayModes();
+            UpdateOverlayBounds();
         }
-        if (edge is Native.WMSZ_LEFT or Native.WMSZ_TOPLEFT or Native.WMSZ_BOTTOMLEFT) r.Left = r.Right - w; else r.Right = r.Left + w;
-        if (edge is Native.WMSZ_TOP or Native.WMSZ_TOPLEFT or Native.WMSZ_TOPRIGHT) r.Top = r.Bottom - h; else r.Bottom = r.Top + h;
-        Marshal.StructureToPtr(r, lParam, false);
+        BeginWindowDrag();
     }
 
     public void BeginWindowDrag()
@@ -476,6 +700,15 @@ public partial class PlayerWindow : Window
             if (flash) _overlay?.Flash(playing: Editor.IsPlaying);
             return;
         }
+        _scrub?.Jumped(-1);
+        if (_resumeAfterScrub)
+        {
+            // held for the hand on the timeline: it stays paused once let go
+            _resumeAfterScrub = false;
+            if (flash) _overlay?.Flash(playing: false);
+            RefreshOverlay();
+            return;
+        }
         bool wasPaused = _mpv.Paused;
         if (wasPaused && _mpv.EofReached) _mpv.Command("seek", "0", "absolute");
         _mpv.Command("cycle", "pause");
@@ -484,14 +717,43 @@ public partial class PlayerWindow : Window
 
     public void SeekRelative(double sec)
     {
+        _scrub?.Jumped(-1);
         _mpv?.CommandAsync("seek", F(sec), "relative+exact");
         _overlay?.ShowControls();
     }
 
+    private ScrubSeeker? _scrub;
+    // playback held while the hand is on the timeline, picked up again from where it is let go
+    private bool _resumeAfterScrub;
+
+    /// <summary>
+    /// Seeks to a point of the timeline as the hand moves (<see cref="ScrubSeeker"/>: one seek at a time, each for
+    /// where the hand is by then - so the picture follows the hand instead of standing still until it stops; no
+    /// second jump on letting go where the frame already is).
+    /// Playing, the picture and the sound wait for the hand: playback goes on once, from where it is let go.
+    /// </summary>
     public void SeekFraction(double f, bool exact)
     {
         if (_mpv == null || _mpv.Duration <= 0) return;
-        _mpv.CommandAsync("seek", F(f * _mpv.Duration), exact ? "absolute+exact" : "absolute+keyframes");
+        double t = f * _mpv.Duration;
+        _scrub ??= new ScrubSeeker((at, ex) => _mpv?.CommandAsync("seek", F(at), ex ? "absolute+exact" : "absolute+keyframes"));
+        _scrub.Span = _mpv.Duration;
+        if (exact)
+        {
+            _scrub.Release(t);
+            if (_resumeAfterScrub)
+            {
+                _resumeAfterScrub = false;
+                _mpv.SetProperty("pause", "no");
+            }
+            return;
+        }
+        if (!_resumeAfterScrub && !_mpv.Paused)
+        {
+            _resumeAfterScrub = true;
+            _mpv.SetProperty("pause", "yes");
+        }
+        _scrub.Move(t);
     }
 
     public void SetVolume(double v, bool save = false)
@@ -527,7 +789,7 @@ public partial class PlayerWindow : Window
         else
         {
             _fullscreen = false;
-            if (chrome != null) chrome.ResizeBorderThickness = new Thickness(6);
+            if (chrome != null) chrome.ResizeBorderThickness = new Thickness(8);
             var r = _restoreRect;
             Native.SetWindowPos(_hwnd, IntPtr.Zero, r.Left, r.Top, r.Width, r.Height, Native.SWP_FRAMECHANGED | Native.SWP_NOZORDER);
             if (_restoreState == WindowState.Maximized) WindowState = WindowState.Maximized;
@@ -638,7 +900,8 @@ public partial class PlayerWindow : Window
             var mons = MonitorInfo.All();
             Native.GetWindowRect(_hwnd, out var wr);
             var mon = mons.FirstOrDefault(x => x.Contains(wr.Left + wr.Width / 2, wr.Top + wr.Height / 2)) ?? mons[0];
-            CaptureToast.Show(bmp, path, mon);
+            var small = await Task.Run(() => CaptureToast.Preview(bmp));
+            CaptureToast.Show(bmp, path, mon, preview: small);
         }
         catch (Exception ex) { Log.Error("Frame grab failed", ex); }
         finally
@@ -688,6 +951,13 @@ public partial class PlayerWindow : Window
                 _panelGrow = newH - r.Height;
             }
             Editor.Begin(this, _mpv, _overlay, clip);
+            if (_editPending)
+            {
+                // the editor is in the window now (it keeps the film that is loaded): the new window can show itself
+                _editPending = false;
+                _laidOut = true;
+                TryReveal();
+            }
         }), System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
@@ -705,6 +975,7 @@ public partial class PlayerWindow : Window
         }
         _panelGrow = 0;
         UpdateOverlayModes();
+        RefreshOverlay();
         Dispatcher.BeginInvoke(new Action(UpdateOverlayBounds), System.Windows.Threading.DispatcherPriority.Render);
     }
 
@@ -848,7 +1119,7 @@ public partial class PlayerWindow : Window
             case Key.O when ctrl: App.Instance?.OpenMediaDialog(); break;
             case Key.C when ctrl: if (_hasVideo) _ = GrabFrame(save: false); break;
             case Key.W when ctrl: Close(); break;
-            case Key.Home: _mpv.CommandAsync("seek", "0", "absolute"); break;
+            case Key.Home: _scrub?.Jumped(-1); _mpv.CommandAsync("seek", "0", "absolute"); break;
             default: handled = false; break;
         }
         if (handled) e.Handled = true;

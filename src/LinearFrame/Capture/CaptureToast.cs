@@ -9,6 +9,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using LinearFrame.Core;
 using LinearFrame.Editor;
+using LinearFrame.Imaging;
 using LinearFrame.UI;
 
 namespace LinearFrame.Capture;
@@ -21,22 +22,100 @@ public sealed class CaptureToast : Window
     private static CaptureToast? _current;
 
     private readonly BitmapSource _image;
+    private readonly Image _picture;
     private readonly string? _path;
     private readonly MonitorInfo _monitor;
     private readonly DispatcherTimer _timer;
     private readonly TranslateTransform _slide = new();
     private readonly Grid _hoverLayer;
+    private readonly Grid _inner;
+    private readonly double _width;
     private Point _down;
     private bool _pressed, _closing;
     private IntPtr _hwnd;
 
     /// <param name="badge">small label on the preview: "HD 4×", or why the capture stayed a normal one</param>
     /// <param name="badgeGood">true = accent colour (HD worked), false = neutral note</param>
-    public static void Show(BitmapSource image, string? path, MonitorInfo monitor, string? badge = null, bool badgeGood = false)
+    /// <param name="preview">a small copy to draw (<see cref="Preview"/>); without one the capture itself is drawn</param>
+    public static void Show(BitmapSource image, string? path, MonitorInfo monitor, string? badge = null, bool badgeGood = false, BitmapSource? preview = null)
     {
         _current?.Dismiss(fast: true);
         _current = new CaptureToast(image, path, monitor, badge, badgeGood);
+        if (preview != null) _current._picture.Source = preview;
         _current.Show();
+    }
+
+    /// <summary>
+    /// A copy of the capture no bigger than the preview can show (any thread). Drawing the preview from the capture
+    /// itself made the graphics card take the whole picture - an HD capture is 80 MB of it, for a thumbnail 236 wide.
+    /// </summary>
+    public static BitmapSource Preview(BitmapSource image)
+    {
+        try
+        {
+            // the preview is at most 236 × 160 units; three times that covers every screen scaling
+            double k = Math.Max(720.0 / image.PixelWidth, 480.0 / image.PixelHeight);
+            if (k >= 0.75) return image;
+            var small = new CachedBitmap(new TransformedBitmap(image, new ScaleTransform(k, k)), BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+            small.Freeze();
+            return small;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Preview copy: " + ex.Message);
+            return image;
+        }
+    }
+
+    /// <summary>Looks for a QR code in the screenshot just taken (off the UI thread); a link shows up on the preview.</summary>
+    public static async void FindCode(BitmapSource image)
+    {
+        var toast = _current;
+        if (toast == null || !ReferenceEquals(toast._image, image)) return;
+        List<QrReader.Code> codes;
+        try { codes = await Task.Run(() => QrReader.Read(PixelBuffer.FromBitmap(image))); }
+        catch { return; }
+        if (codes.Count == 0 || _current != toast || toast._closing) return;
+        toast.ShowCode(codes[0]);
+    }
+
+    private void ShowCode(QrReader.Code code)
+    {
+        string? link = code.Link;
+        var content = new StackPanel { Orientation = Orientation.Horizontal };
+        content.Children.Add(new IconView { Icon = link != null ? "link" : "copy", Width = 13, Height = 13, Foreground = Brushes.White, Margin = new Thickness(0, 0, 6, 0) });
+        content.Children.Add(new TextBlock
+        {
+            Text = link != null ? Viewer.LiveText.Short(link) : L.T("Live.QrCopy"),
+            Foreground = Brushes.White,
+            FontSize = 11.5,
+            FontWeight = FontWeights.SemiBold,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxWidth = Math.Max(60, _width - 60),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var pill = new Button
+        {
+            Content = content,
+            ToolTip = code.Text,
+            Padding = new Thickness(9, 4, 10, 4),
+            Margin = new Thickness(6, 6, 40, 6),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Cursor = Cursors.Hand,
+        };
+        pill.SetResourceReference(StyleProperty, "Hud.Primary");
+        pill.Click += (_, _) =>
+        {
+            if (link != null) ShellUtil.Open(link);
+            else if (ImageIO.CopyText(code.Text)) Hud.Show(L.T("Live.Copied"), "copy");
+            Dismiss();
+        };
+        _inner.Children.Add(pill);
+        // the link needs a moment to be read
+        _timer.Stop();
+        _timer.Interval = TimeSpan.FromSeconds(12);
+        _timer.Start();
     }
 
     private CaptureToast(BitmapSource image, string? path, MonitorInfo monitor, string? badge, bool badgeGood)
@@ -61,6 +140,7 @@ public sealed class CaptureToast : Window
         w = Math.Max(w, 96); h = Math.Max(h, 64);
 
         var img = new Image { Source = image, Stretch = Stretch.UniformToFill, Width = w, Height = h };
+        _picture = img;
         RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
 
         _hoverLayer = new Grid { Opacity = 0, Background = new SolidColorBrush(Color.FromArgb(0x55, 0, 0, 0)) };
@@ -83,11 +163,25 @@ public sealed class CaptureToast : Window
             VerticalAlignment = VerticalAlignment.Center,
             IsHitTestVisible = false,
         };
+        var textBtn = new Button { Content = new IconView { Icon = "textscan", Width = 15, Height = 15 }, Width = 28, Height = 26, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(6), ToolTip = L.T("Capture.CopyTextTip") };
+        textBtn.SetResourceReference(StyleProperty, "Hud.IconButton");
+        textBtn.Background = new SolidColorBrush(Color.FromArgb(0x99, 0x1F, 0x1F, 0x22));
+        textBtn.Click += async (_, _) =>
+        {
+            // the text in the screenshot to the clipboard (instead of the picture)
+            var text = await Task.Run(() => TextRecognizer.Recognize(PixelBuffer.FromBitmap(_image)));
+            if (text == null || text.IsEmpty) { Hud.Show(L.T(text == null ? "Capture.NoOcr" : "Capture.NoText"), "info"); return; }
+            if (ImageIO.CopyText(text.Text)) Hud.Show(L.T("Live.Copied"), "copy");
+            Dismiss();
+        };
         _hoverLayer.Children.Add(edit);
         _hoverLayer.Children.Add(close);
         _hoverLayer.Children.Add(folder);
+        _hoverLayer.Children.Add(textBtn);
 
         var inner = new Grid();
+        _inner = inner;
+        _width = w;
         inner.Children.Add(img);
         if (!string.IsNullOrEmpty(badge))
         {

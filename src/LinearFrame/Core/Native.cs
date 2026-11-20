@@ -89,6 +89,7 @@ internal static class Native
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT { public int X, Y; public POINT(int x, int y) { X = x; Y = y; } }
 
+
     [StructLayout(LayoutKind.Sequential)]
     public struct MINMAXINFO
     {
@@ -161,6 +162,9 @@ internal static class Native
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] public static extern int GetSystemMetricsForDpi(int index, uint dpi);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern IntPtr LoadCursor(IntPtr instance, IntPtr name);
+    [DllImport("user32.dll")] public static extern IntPtr SetCursor(IntPtr cursor);
+    public const int IDC_SIZENWSE = 32642, IDC_SIZENESW = 32643, IDC_SIZEWE = 32644, IDC_SIZENS = 32645;
     [DllImport("user32.dll")] public static extern uint GetDpiForSystem();
     [DllImport("user32.dll")] public static extern uint GetDoubleClickTime();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool SystemParametersInfo(uint action, uint param, ref RECT r, uint winIni);

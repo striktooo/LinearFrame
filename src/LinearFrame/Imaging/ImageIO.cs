@@ -116,6 +116,63 @@ public static class ImageIO
         return false;
     }
 
+    /// <summary>Text on the clipboard (recognised text, a QR code's content).</summary>
+    public static bool CopyText(string text)
+    {
+        for (int attempt = 0; attempt < 12; attempt++)
+        {
+            try
+            {
+                Clipboard.SetDataObject(new DataObject(DataFormats.UnicodeText, text), true);
+                return true;
+            }
+            catch (COMException) { Thread.Sleep(60); }
+            catch (ExternalException) { Thread.Sleep(60); }
+        }
+        return false;
+    }
+
+    /// <summary>Empties the clipboard (the "Clear the clipboard" shortcut).</summary>
+    public static bool ClearClipboard()
+    {
+        for (int attempt = 0; attempt < 12; attempt++)
+        {
+            try
+            {
+                Clipboard.Clear();
+                return true;
+            }
+            catch (COMException) { Thread.Sleep(60); }
+            catch (ExternalException) { Thread.Sleep(60); }
+        }
+        return false;
+    }
+
+    /// <summary>Files on the clipboard, as Explorer's Copy puts them (a paste into a chat or a folder takes all of them).</summary>
+    public static bool CopyFilesToClipboard(IReadOnlyList<string> files)
+    {
+        try
+        {
+            var data = new DataObject();
+            var list = new System.Collections.Specialized.StringCollection();
+            foreach (var f in files) list.Add(f);
+            data.SetFileDropList(list);
+            data.SetData("Preferred DropEffect", new MemoryStream(BitConverter.GetBytes(1)), false); // copy, not move
+            for (int attempt = 0; attempt < 12; attempt++)
+            {
+                try
+                {
+                    Clipboard.SetDataObject(data, true);
+                    return true;
+                }
+                catch (COMException) { Thread.Sleep(60); }
+                catch (ExternalException) { Thread.Sleep(60); }
+            }
+        }
+        catch (Exception ex) { Log.Error("Clipboard (files) failed", ex); }
+        return false;
+    }
+
     private static FileStream OpenRead(string path) =>
         new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
 

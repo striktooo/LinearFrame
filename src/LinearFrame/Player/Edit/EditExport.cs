@@ -163,14 +163,14 @@ internal static class EditExport
             if (clip.HasVideo)
             {
                 var names = Enumerable.Range(0, n).Select(i => $"c{k}v{i}").ToList();
-                g.Append($"[{k}:v]setpts=PTS-STARTPTS,fps={fpsText},format=yuv420p");
+                g.Append(CultureInfo.InvariantCulture, $"[{k}:v]setpts=PTS-STARTPTS,fps={fpsText},format=yuv420p");
                 g.Append(n > 1 ? $",split={n}{string.Concat(names.Select(x => $"[{x}]"))};\n" : $"[{names[0]}];\n");
                 vLabels[k] = new Queue<string>(names);
             }
             if (clip.HasAudio && anyAudio)
             {
                 var names = Enumerable.Range(0, n).Select(i => $"c{k}a{i}").ToList();
-                g.Append($"[{k}:a]asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo");
+                g.Append(CultureInfo.InvariantCulture, $"[{k}:a]asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo");
                 g.Append(n > 1 ? $",asplit={n}{string.Concat(names.Select(x => $"[{x}]"))};\n" : $"[{names[0]}];\n");
                 aLabels[k] = new Queue<string>(names);
             }
@@ -190,21 +190,21 @@ internal static class EditExport
                 frames = Math.Max(1, (int)Math.Round(pc.Length * fps));
                 int k = next++;
                 inputs.AddRange(new[] { "-ss", N(at / fps), "-i", clip.Path });
-                g.Append($"[{k}:v]setpts=PTS-STARTPTS,fps={fpsText},format=yuv420p,trim=end_frame=1,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop={frames - 1}[t{i}];\n");
+                g.Append(CultureInfo.InvariantCulture, $"[{k}:v]setpts=PTS-STARTPTS,fps={fpsText},format=yuv420p,trim=end_frame=1,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop={frames - 1}[t{i}];\n");
                 Frame(p, clip, W, H, $"t{i}", $"p{i}v", i, g);
             }
             else if (vLabels.TryGetValue(pc.Clip, out var vq))
             {
                 int a = (int)Math.Round(pc.SrcIn * fps), b = Math.Max(a + 1, (int)Math.Round(pc.SrcOut * fps));
                 frames = b - a;
-                g.Append($"[{vq.Dequeue()}]trim=start_frame={a}:end_frame={b},setpts=PTS-STARTPTS[t{i}];\n");
+                g.Append(CultureInfo.InvariantCulture, $"[{vq.Dequeue()}]trim=start_frame={a}:end_frame={b},setpts=PTS-STARTPTS[t{i}];\n");
                 Frame(p, clip, W, H, $"t{i}", $"p{i}v", i, g);
             }
             else
             {
                 // a clip without picture (audio joined to a video): black for its length
                 frames = Math.Max(1, (int)Math.Round(pc.Length * fps));
-                g.Append($"color=c=black:s={W}x{H}:r={fpsText}:d={N(frames / fps)},format=yuv420p,setsar=1[p{i}v];\n");
+                g.Append(CultureInfo.InvariantCulture, $"color=c=black:s={W}x{H}:r={fpsText}:d={N(frames / fps)},format=yuv420p,setsar=1[p{i}v];\n");
             }
             double len = frames / fps;
             if (anyAudio)
@@ -213,12 +213,12 @@ internal static class EditExport
                 {
                     long s0 = (long)Math.Round(Math.Round(pc.SrcIn * fps) / fps * 48000);
                     long s1 = s0 + (long)Math.Round(len * 48000);
-                    g.Append($"[{aq.Dequeue()}]atrim=start_sample={s0}:end_sample={s1},asetpts=PTS-STARTPTS,apad=whole_len={s1 - s0}[p{i}a];\n");
+                    g.Append(CultureInfo.InvariantCulture, $"[{aq.Dequeue()}]atrim=start_sample={s0}:end_sample={s1},asetpts=PTS-STARTPTS,apad=whole_len={s1 - s0}[p{i}a];\n");
                 }
-                else g.Append($"aevalsrc=exprs=0|0:c=stereo:s=48000:d={N(len)}[p{i}a];\n"); // a freeze is silent; the banner brings its own sound
-                concat.Append($"[p{i}v][p{i}a]");
+                else g.Append(CultureInfo.InvariantCulture, $"aevalsrc=exprs=0|0:c=stereo:s=48000:d={N(len)}[p{i}a];\n"); // a freeze is silent; the banner brings its own sound
+                concat.Append(CultureInfo.InvariantCulture, $"[p{i}v][p{i}a]");
             }
-            else concat.Append($"[p{i}v]");
+            else concat.Append(CultureInfo.InvariantCulture, $"[p{i}v]");
         }
         g.Append(concat).Append($"concat=n={pieces.Count}:v=1:a={(anyAudio ? 1 : 0)}[base]" + (anyAudio ? "[aorig]" : "") + ";\n");
 
@@ -235,12 +235,12 @@ internal static class EditExport
             int x = (int)Math.Round(b.X * W - bw / 2.0), y = (int)Math.Round(b.Y * H - bh / 2.0);
             int k = next++;
             inputs.AddRange(new[] { "-i", b.Asset.Path });
-            g.Append($"[{k}:v]setpts=PTS-STARTPTS,crop={box.Width}:{box.Height}:{box.X}:{box.Y},scale={bw}:{bh}:flags=lanczos,format=yuva420p,setpts=PTS+{N(f0)}/TB[bn{step}];\n");
-            g.Append($"[{cur}][bn{step}]overlay=x={x}:y={y}:eof_action=pass:format=auto[ob{step}];\n");
+            g.Append(CultureInfo.InvariantCulture, $"[{k}:v]setpts=PTS-STARTPTS,crop={box.Width}:{box.Height}:{box.X}:{box.Y},scale={bw}:{bh}:flags=lanczos,format=yuva420p,setpts=PTS+{N(f0)}/TB[bn{step}];\n");
+            g.Append(CultureInfo.InvariantCulture, $"[{cur}][bn{step}]overlay=x={x}:y={y}:eof_action=pass:format=auto[ob{step}];\n");
             cur = $"ob{step}";
             if (b.Asset.HasAudio && anyAudio)
             {
-                g.Append($"[{k}:a]asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,adelay=delays={(long)Math.Round(f0 * 1000)}:all=1[ba{step}];\n");
+                g.Append(CultureInfo.InvariantCulture, $"[{k}:a]asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,adelay=delays={(long)Math.Round(f0 * 1000)}:all=1[ba{step}];\n");
                 bannerAudio.Add($"[ba{step}]");
             }
             step++;
@@ -275,17 +275,17 @@ internal static class EditExport
             int k = next++;
             inputs.AddRange(new[] { "-i", file });
             int x = (int)Math.Round(o.X * W + bounds.X), y = (int)Math.Round(o.Y * H + bounds.Y);
-            g.Append($"[{cur}][{k}:v]overlay=x={x}:y={y}:format=auto:enable='between(t,{N(f0)},{N(f1 - 0.5 / fps)})'[oc{pic}];\n");
+            g.Append(CultureInfo.InvariantCulture, $"[{cur}][{k}:v]overlay=x={x}:y={y}:format=auto:enable='between(t,{N(f0)},{N(f1 - 0.5 / fps)})'[oc{pic}];\n");
             cur = $"oc{pic}";
             pic++;
         }
-        g.Append($"[{cur}]format=yuv420p,setsar=1[vout]");
+        g.Append(CultureInfo.InvariantCulture, $"[{cur}]format=yuv420p,setsar=1[vout]");
 
         if (anyAudio)
         {
             g.Append(";\n");
             if (bannerAudio.Count == 0) g.Append("[aorig]alimiter=limit=0.97:level=false[aout]");
-            else g.Append($"[aorig]{string.Concat(bannerAudio)}amix=inputs={1 + bannerAudio.Count}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=false[aout]");
+            else g.Append(CultureInfo.InvariantCulture, $"[aorig]{string.Concat(bannerAudio)}amix=inputs={1 + bannerAudio.Count}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=false[aout]");
         }
         return (g.ToString(), inputs, total, anyAudio);
     }
@@ -300,23 +300,23 @@ internal static class EditExport
         bool inside = x >= 0 && y >= 0 && x + vw <= W && y + vh <= H;
         if (covers)
         {
-            if (vw == W && vh == H) g.Append($"[{input}]scale={W}:{H}:flags=bicubic,setsar=1[{output}];\n");
-            else g.Append($"[{input}]scale={vw}:{vh}:flags=bicubic,crop={W}:{H}:{-x}:{-y},setsar=1[{output}];\n");
+            if (vw == W && vh == H) g.Append(CultureInfo.InvariantCulture, $"[{input}]scale={W}:{H}:flags=bicubic,setsar=1[{output}];\n");
+            else g.Append(CultureInfo.InvariantCulture, $"[{input}]scale={vw}:{vh}:flags=bicubic,crop={W}:{H}:{-x}:{-y},setsar=1[{output}];\n");
         }
         else if (inside && p.Canvas.Background == CanvasBackground.Black)
-            g.Append($"[{input}]scale={vw}:{vh}:flags=bicubic,pad={W}:{H}:{x}:{y}:black,setsar=1[{output}];\n");
+            g.Append(CultureInfo.InvariantCulture, $"[{input}]scale={vw}:{vh}:flags=bicubic,pad={W}:{H}:{x}:{y}:black,setsar=1[{output}];\n");
         else
         {
-            g.Append($"[{input}]split[f{i}a][f{i}b];\n");
+            g.Append(CultureInfo.InvariantCulture, $"[{input}]split[f{i}a][f{i}b];\n");
             if (p.Canvas.Background == CanvasBackground.Blur)
             {
                 // blur a small copy (cheap) and blow it up: the same look as a big blur, a fraction of the work
                 int sw = Even(W / 8.0), sh = Even(H / 8.0);
-                g.Append($"[f{i}a]scale={sw}:{sh}:force_original_aspect_ratio=increase:flags=bilinear,crop={sw}:{sh},gblur=sigma=5,scale={W}:{H}:flags=bilinear,eq=brightness=-0.06[f{i}g];\n");
+                g.Append(CultureInfo.InvariantCulture, $"[f{i}a]scale={sw}:{sh}:force_original_aspect_ratio=increase:flags=bilinear,crop={sw}:{sh},gblur=sigma=5,scale={W}:{H}:flags=bilinear,eq=brightness=-0.06[f{i}g];\n");
             }
-            else g.Append($"[f{i}a]scale={W}:{H},drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[f{i}g];\n");
-            g.Append($"[f{i}b]scale={vw}:{vh}:flags=bicubic[f{i}s];\n");
-            g.Append($"[f{i}g][f{i}s]overlay=x={x}:y={y}:format=auto,setsar=1[{output}];\n");
+            else g.Append(CultureInfo.InvariantCulture, $"[f{i}a]scale={W}:{H},drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[f{i}g];\n");
+            g.Append(CultureInfo.InvariantCulture, $"[f{i}b]scale={vw}:{vh}:flags=bicubic[f{i}s];\n");
+            g.Append(CultureInfo.InvariantCulture, $"[f{i}g][f{i}s]overlay=x={x}:y={y}:format=auto,setsar=1[{output}];\n");
         }
     }
 
@@ -353,9 +353,13 @@ internal static class EditExport
         var err = new StringBuilder();
         var errTask = Task.Run(async () =>
         {
-            string? line;
-            while ((line = await proc.StandardError.ReadLineAsync()) != null)
-                if (err.Length < 8000) err.AppendLine(line);
+            try
+            {
+                string? line;
+                while ((line = await proc.StandardError.ReadLineAsync()) != null)
+                    if (err.Length < 8000) err.AppendLine(line);
+            }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException) { /* killed: nothing more to read */ }
         });
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
         if (timeoutMs > 0) limit.CancelAfter(timeoutMs);

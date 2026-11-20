@@ -56,7 +56,7 @@ internal static class HdCapture
             {
                 var mb = monitor.Bounds;
                 var r = RenderOn(windows, monitor, selection, frozen, wantedScale,
-                    (n, percent) => VirtualScreen.Arm(mb.Width * n, mb.Height * n, percent), sameScaleOk: false, sw);
+                    (n, percent, settle) => VirtualScreen.Arm(mb.Width * n, mb.Height * n, percent, settle), sameScaleOk: false, sw);
                 Log.Info($"HD capture: {(r.Image != null ? $"{r.Image.Width}x{r.Image.Height} at {r.Scale:0.##}×" : "no - " + r.Failure)} in {sw.ElapsedMilliseconds} ms ({r.Detail})");
                 return r;
             }
@@ -70,6 +70,11 @@ internal static class HdCapture
     }
 
     private static HdResult Fail(HdFailure f, string detail = "") => new(null, 1, f, detail);
+
+    private const uint Quiet = Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_NOOWNERZORDER | Native.SWP_ASYNCWINDOWPOS;
+
+    /// <summary>Dev only: gets the last picture looked at when a re-render didn't match.</summary>
+    internal static Action<PixelBuffer>? DebugLastLook;
 
     /// <summary>The window that owns the whole selection - or the reason there is no single such window.</summary>
     internal static (WindowEntry? Window, HdFailure Failure) PickWindow(IReadOnlyList<WindowEntry> windows, Int32Rect sel)
@@ -105,10 +110,11 @@ internal static class HdCapture
         return false;
     }
 
-    /// <param name="arm">gets the screen to render on for a factor and a scaling percentage (null = not possible)</param>
+    /// <param name="arm">gets the screen to render on for a factor and a scaling percentage, its work area final or not
+    /// (null = not possible)</param>
     /// <param name="sameScaleOk">self-test only: accept a target with the same scaling (checks the mechanics, gains no detail)</param>
     internal static HdResult RenderOn(IReadOnlyList<WindowEntry> windows, MonitorInfo monitor, Int32Rect selection, PixelBuffer frozen,
-        int wantedScale, Func<int, int, VirtualScreen.Armed?> arm, bool sameScaleOk, Stopwatch sw)
+        int wantedScale, Func<int, int, bool, VirtualScreen.Armed?> arm, bool sameScaleOk, Stopwatch sw)
     {
         var sel = new Int32Rect(monitor.Bounds.X + selection.X, monitor.Bounds.Y + selection.Y, selection.Width, selection.Height);
         var (entry, why) = PickWindow(windows, sel);
@@ -128,6 +134,7 @@ internal static class HdCapture
         uint dpi0 = Native.GetDpiForWindow(hwnd);
         if (dpi0 == 0) dpi0 = (uint)Math.Round(monitor.Scale * 96);
         int srcPercent = (int)Math.Round(dpi0 * 100 / 96.0);
+        bool maximized = Native.IsZoomed(hwnd);
 
         // the virtual screen: big enough for this monitor at N×, scaled N× - try the wanted factor, then smaller ones
         VirtualScreen.Armed? screen = null;
@@ -137,7 +144,7 @@ internal static class HdCapture
         {
             int percent = srcPercent * n;
             if (percent > 500 || !Displays.IsStep(percent)) continue;
-            screen = arm(n, percent);
+            screen = arm(n, percent, maximized);
             if (screen != null && !sameScaleOk && screen.Dpi <= dpi0) screen = null;
         }
         if (screen == null) return Fail(VirtualScreen.Find() == null ? HdFailure.NotInstalled : HdFailure.NoScreen);
@@ -157,8 +164,20 @@ internal static class HdCapture
         if (selTop < wa.Y) dstY += (int)Math.Ceiling(wa.Y - selTop);
         if (selLeft < wa.X) dstX += (int)Math.Ceiling(wa.X - selLeft);
 
-        const uint Quiet = Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_NOOWNERZORDER | Native.SWP_ASYNCWINDOWPOS;
-        bool moved = false;
+        // A maximized window goes exactly over the virtual screen's work area, sticking out past it as much as it did on
+        // its own screen (k times more) - that is where Windows itself keeps a maximized window on that screen.
+        if (maximized)
+        {
+            // over the virtual screen's work area, sticking out past it as much as it did on its own screen (k times more)
+            var mwa = monitor.WorkArea;
+            int ol = mwa.X - r0.Left, ot = mwa.Y - r0.Top, orr = r0.Right - (mwa.X + mwa.Width), ob = r0.Bottom - (mwa.Y + mwa.Height);
+            dstX = wa.X - (int)Math.Round(ol * k);
+            dstY = wa.Y - (int)Math.Round(ot * k);
+            dstW = wa.Width + (int)Math.Round((ol + orr) * k);
+            dstH = wa.Height + (int)Math.Round((ot + ob) * k);
+        }
+
+        bool moved = false, sized, placed;
         try
         {
             // 1) only move: Windows notices the new scaling and tells the app (WM_DPICHANGED), which resizes itself
@@ -170,31 +189,31 @@ internal static class HdCapture
             moved = true;
             if (!WaitFor(() => Native.GetDpiForWindow(hwnd) == screen.Dpi, 900))
                 return Fail(HdFailure.Moved, $"dpi stayed {Native.GetDpiForWindow(hwnd)}");
-            WaitFor(() => Native.GetWindowRect(hwnd, out var r) && Math.Abs(r.Width - dstW) <= dstW / 40 + 4 && Math.Abs(r.Height - dstH) <= dstH / 40 + 4, 500);
+            sized = WaitFor(() => Native.GetWindowRect(hwnd, out var r) && Math.Abs(r.Width - dstW) <= dstW / 40 + 4 && Math.Abs(r.Height - dstH) <= dstH / 40 + 4, 500);
             // 2) the exact place and size
             Native.SetWindowPos(hwnd, IntPtr.Zero, dstX, dstY, dstW, dstH, Quiet);
-            WaitFor(() => Native.GetWindowRect(hwnd, out var r) && r.Left == dstX && r.Top == dstY && r.Width == dstW && r.Height == dstH, 400);
+            placed = WaitFor(() => Native.GetWindowRect(hwnd, out var r) && r.Left == dstX && r.Top == dstY && r.Width == dstW && r.Height == dstH, 400);
             long movedMs = sw.ElapsedMilliseconds;
 
-            var result = WaitForRender(hwnd, screen, sel, r0, k, frozen, sameScaleOk, out string detail);
-            detail = $"screen {armedMs} ms, move {movedMs - armedMs} ms, render {sw.ElapsedMilliseconds - movedMs} ms; {detail}";
+            var result = WaitForRender(hwnd, screen, sel, r0, k, frozen, sameScaleOk, new Int32Rect(dstX, dstY, dstW, dstH), out string detail);
+            detail = $"screen {armedMs} ms, move{(maximized ? " (maximized)" : "")} {movedMs - armedMs} ms{(placed ? "" : sized ? " (not exactly placed)" : " (size not taken)")}, render {sw.ElapsedMilliseconds - movedMs} ms; {detail}";
             return result with { Detail = detail };
         }
         finally
         {
-            if (moved) Restore(hwnd, r0, dpi0, Quiet);
+            if (moved) Restore(hwnd, r0, dpi0);
         }
     }
 
     /// <summary>Polls the virtual screen until the window shows the same content as the frozen screenshot, really re-rendered.</summary>
-    private static HdResult WaitForRender(IntPtr hwnd, VirtualScreen.Armed screen, Int32Rect sel, Native.RECT r0, double k, PixelBuffer frozen, bool sameScaleOk, out string detail)
+    private static HdResult WaitForRender(IntPtr hwnd, VirtualScreen.Armed screen, Int32Rect sel, Native.RECT r0, double k, PixelBuffer frozen, bool sameScaleOk, Int32Rect planned, out string detail)
     {
         var frozenGray = ImageMatch.ToGray(frozen);
         var frozenBlur = ImageMatch.Blur(frozenGray);
         int marginHd = (int)Math.Ceiling((SearchRadius + 2) * k);
         var vb = screen.Bounds;
 
-        PixelBuffer? best = null; double bestGain = double.NaN, bestDiff = 255; bool matched = false;
+        PixelBuffer? best = null, lastShot = null; double bestGain = double.NaN, bestDiff = 255; bool matched = false, nudged = false;
         ulong lastPrint = 0; int stable = 0, looks = 0;
         var clock = Stopwatch.StartNew();
         const int Deadline = 2600;
@@ -206,9 +225,32 @@ internal static class HdCapture
             int ex = now.Left + (int)Math.Round((sel.X - r0.Left) * k), ey = now.Top + (int)Math.Round((sel.Y - r0.Top) * k);
             int ew = (int)Math.Round(sel.Width * k), eh = (int)Math.Round(sel.Height * k);
             var area = ImageOps.Intersect(new Int32Rect(ex - marginHd, ey - marginHd, ew + 2 * marginHd, eh + 2 * marginHd), vb);
-            if (area.Width < ew || area.Height < eh) { detail = "selection outside the virtual screen"; return Fail(HdFailure.Error, detail); }
+            if (area.Width < ew || area.Height < eh)
+            {
+                uint dpiNow = Native.GetDpiForWindow(hwnd);
+                string where = $"window at {now.Left},{now.Top} {now.Width}x{now.Height} (planned {planned.X},{planned.Y} {planned.Width}x{planned.Height}), " +
+                               $"selection {ex},{ey} {ew}x{eh}, screen {vb.X},{vb.Y} {vb.Width}x{vb.Height}, dpi {dpiNow}";
+                if (dpiNow != screen.Dpi) { detail = "the window went back to a normal screen: " + where; return Fail(HdFailure.Moved, detail); }
+                if (!nudged)
+                {
+                    // the app put itself somewhere else than asked (or kept another size): once, slide the window so the
+                    // selection is on the virtual screen, from where the window really is
+                    nudged = true;
+                    Log.Info("HD capture: selection off the virtual screen, sliding the window: " + where);
+                    var wa = screen.WorkArea;
+                    int dx = ex < wa.X ? wa.X - ex : ex + ew > wa.X + wa.Width ? wa.X + wa.Width - (ex + ew) : 0;
+                    int dy = ey < wa.Y ? wa.Y - ey : ey + eh > wa.Y + wa.Height ? wa.Y + wa.Height - (ey + eh) : 0;
+                    int nx = now.Left + dx, ny = now.Top + dy;
+                    Native.SetWindowPos(hwnd, IntPtr.Zero, nx, ny, 0, 0, Quiet | Native.SWP_NOSIZE);
+                    WaitFor(() => Native.GetWindowRect(hwnd, out var r) && r.Left == nx && r.Top == ny, 400);
+                    continue;
+                }
+                detail = "selection outside the virtual screen: " + where;
+                return Fail(HdFailure.Error, detail);
+            }
 
             var shot = ScreenCapturer.Capture(area, quiet: true);
+            lastShot = shot;
             looks++;
             ulong print = ImageMatch.Fingerprint(shot);
             stable = print == lastPrint ? stable + 1 : 0;
@@ -238,7 +280,10 @@ internal static class HdCapture
             detail = $"{looks} looks, accepted late, detail gain {bestGain:0.00}";
             return new HdResult(best, k, HdFailure.None, detail);
         }
-        detail = matched ? $"{looks} looks, detail gain only {bestGain:0.00}" : $"{looks} looks, best difference {bestDiff:0.0}";
+        if (lastShot != null) DebugLastLook?.Invoke(lastShot);
+        Native.GetWindowRect(hwnd, out var end);
+        detail = (matched ? $"{looks} looks, detail gain only {bestGain:0.00}" : $"{looks} looks, best difference {bestDiff:0.0}") +
+                 $"; window at {end.Left},{end.Top} {end.Width}x{end.Height} (planned {planned.X},{planned.Y} {planned.Width}x{planned.Height}), dpi {Native.GetDpiForWindow(hwnd)}";
         return Fail(matched ? HdFailure.NoGain : HdFailure.Changed, detail);
     }
 
@@ -268,27 +313,50 @@ internal static class HdCapture
         return new Verdict(true, loc.Difference, alike, loc.Dx, loc.Dy, ImageMatch.DetailGain(ImageMatch.ToGray(crop), frozenGray, k), crop);
     }
 
-    /// <summary>Puts the window back exactly where it was (place, size, scaling).</summary>
-    private static void Restore(IntPtr hwnd, Native.RECT r0, uint dpi0, uint quiet)
+    /// <summary>
+    /// Puts the window back exactly where it was (place, size, scaling) - place and size in one go. Put back by its
+    /// corner only, a window 2-4× its size mostly hangs off the screens and Windows left its scaling at the virtual
+    /// screen's; the size set after that brought the scaling back late, and the app shrank itself by the same factor
+    /// once more (a window came back at a quarter of its size). So: the size again whenever the scaling has come back,
+    /// until it stays.
+    /// </summary>
+    private static void Restore(IntPtr hwnd, Native.RECT r0, uint dpi0)
     {
         try
         {
             bool Back() => Native.GetWindowRect(hwnd, out var r) && r.Left == r0.Left && r.Top == r0.Top && r.Width == r0.Width && r.Height == r0.Height;
-            Native.SetWindowPos(hwnd, IntPtr.Zero, r0.Left, r0.Top, 0, 0, quiet | Native.SWP_NOSIZE);
-            WaitFor(() => Native.GetDpiForWindow(hwnd) == dpi0, 900);
-            for (int attempt = 0; attempt < 4 && !Back(); attempt++)
+            var clock = Stopwatch.StartNew();
+            Native.SetWindowPos(hwnd, IntPtr.Zero, r0.Left, r0.Top, r0.Width, r0.Height, Quiet);
+            if (!WaitFor(() => Native.GetDpiForWindow(hwnd) == dpi0, 900))
             {
-                Native.SetWindowPos(hwnd, IntPtr.Zero, r0.Left, r0.Top, r0.Width, r0.Height, quiet);
-                WaitFor(Back, 350);
+                Native.GetWindowRect(hwnd, out var r);
+                Log.Warn($"HD restore: dpi {Native.GetDpiForWindow(hwnd)} (not {dpi0}) {clock.ElapsedMilliseconds} ms after the move back, window at {r}");
+            }
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                if (WaitFor(Back, attempt == 0 ? 150 : 300) && Stays(Back, 120)) break;
+                Native.SetWindowPos(hwnd, IntPtr.Zero, r0.Left, r0.Top, r0.Width, r0.Height, Quiet);
             }
             if (!Back())
             {
                 Native.GetWindowRect(hwnd, out var r);
-                Log.Warn($"HD capture: window not exactly restored ({r} instead of {r0})");
+                Log.Warn($"HD capture: window not exactly restored ({r} instead of {r0}, dpi {Native.GetDpiForWindow(hwnd)})");
             }
-            Thread.Sleep(90); // a moment for the app to draw itself at its normal size before the frozen picture goes away
+            Thread.Sleep(60); // a moment for the app to draw itself at its normal size before the frozen picture goes away
         }
         catch (Exception ex) { Log.Error("HD restore failed", ex); }
+    }
+
+    /// <summary>True if the condition holds the whole time (a late change of the app's own counts as not holding).</summary>
+    private static bool Stays(Func<bool> ok, int milliseconds)
+    {
+        var clock = Stopwatch.StartNew();
+        while (clock.ElapsedMilliseconds < milliseconds)
+        {
+            if (!ok()) return false;
+            Thread.Sleep(15);
+        }
+        return ok();
     }
 
     private static bool WaitFor(Func<bool> done, int milliseconds)

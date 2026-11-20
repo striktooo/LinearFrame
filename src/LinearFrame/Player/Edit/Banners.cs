@@ -64,7 +64,7 @@ internal static partial class Banners
             psi.ArgumentList.Add(a);
         using var p = Process.Start(psi);
         if (p == null) return null;
-        _ = p.StandardOutput.ReadToEndAsync();
+        p.StandardOutput.ReadToEndAsync().Forget();
         int x1 = int.MaxValue, y1 = int.MaxValue, x2 = -1, y2 = -1;
         string? line;
         while ((line = await p.StandardError.ReadLineAsync()) != null)
@@ -113,7 +113,7 @@ internal static partial class Banners
             psi.ArgumentList.Add(a);
         using var p = Process.Start(psi);
         if (p == null) return null;
-        _ = p.StandardError.ReadToEndAsync();
+        p.StandardError.ReadToEndAsync().Forget();
         await p.WaitForExitAsync();
         return p.ExitCode == 0 && File.Exists(wav) ? wav : null;
     }
