@@ -18,13 +18,37 @@ namespace LinearFrame.UI;
 /// </summary>
 public static class WindowHelper
 {
+    // Windows that are never seen and never take the focus: the rehearsals LinearFrame runs right after it has started
+    // (App.Rehearsal) - and, in a ghost test copy, every window.
+    private static readonly HashSet<Window> Unseen = new();
+
+    /// <summary>
+    /// Turns a window that has not been shown yet into one that never appears: out of sight from its first moment
+    /// (cloaked), no taskbar button, never active. Everything else about it is the real thing.
+    /// </summary>
+    public static void MakeUnseen(Window w)
+    {
+        Unseen.Add(w);
+        w.ShowActivated = false;
+        w.ShowInTaskbar = false;
+        w.Closed += (_, _) => Unseen.Remove(w);
+    }
+
+    /// <summary>This window (or the window it belongs to) must stay out of sight and out of the way.</summary>
+    public static bool IsUnseen(Window? w) =>
+        AppPaths.Ghost || (w != null && (Unseen.Contains(w) || (w.Owner != null && Unseen.Contains(w.Owner))));
+
     public static void Attach(Window w, bool? forceDark = null)
     {
         w.SourceInitialized += (_, _) =>
         {
             var hwnd = new WindowInteropHelper(w).Handle;
             Theme.ApplyFrame(hwnd, forceDark ?? Theme.IsDark);
-            if (AppPaths.Ghost) Native.SetCloak(hwnd, true);
+            if (IsUnseen(w))
+            {
+                Native.SetCloak(hwnd, true);
+                if (!AppPaths.Ghost) Native.AddExStyle(hwnd, Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE);
+            }
             HwndSource.FromHwnd(hwnd)?.AddHook((IntPtr h, int msg, IntPtr wp, IntPtr lp, ref bool handled) =>
             {
                 if (msg == Native.WM_GETMINMAXINFO)
@@ -178,9 +202,9 @@ public static class WindowHelper
 
     public static void BringToFront(Window w)
     {
-        if (AppPaths.Ghost)
+        if (IsUnseen(w))
         {
-            // a test copy that must not be seen: on (out of sight), never in front
+            // a rehearsal, or a test copy that must not be seen: on (out of sight), never in front
             if (!w.IsVisible) { w.ShowActivated = false; w.Show(); }
             return;
         }
@@ -334,6 +358,7 @@ public static class Hud
             {
                 var hwnd = new WindowInteropHelper(w).Handle;
                 Native.AddExStyle(hwnd, Native.WS_EX_NOACTIVATE | Native.WS_EX_TOOLWINDOW | Native.WS_EX_TRANSPARENT);
+                if (AppPaths.Ghost) Native.SetCloak(hwnd, true); // a test copy that must not be seen
             };
             w.Loaded += (_, _) =>
             {

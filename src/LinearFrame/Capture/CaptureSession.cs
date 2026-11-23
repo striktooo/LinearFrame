@@ -57,8 +57,9 @@ public sealed class CaptureSession
     /// <summary>
     /// Puts a tiny, invisible (cloaked, click-through) overlay on every monitor for a moment, so the first shortcut press
     /// is as fast as every later one: code, styles and fonts are warm, and WPF has set up its Direct3D device for each
-    /// screen. Right after Windows starts that set-up alone can take several seconds - the very first capture used to sit
-    /// invisible for that long (and an off-screen window, which this used to be, never set it up at all).
+    /// screen (an off-screen window, which this used to be, never set that up at all).
+    /// (The seconds the first capture after a restart used to wait were something else - the antivirus reading the then
+    /// 146 MB LinearFrame.exe, which WPF opens for its icon with every new window; see the csproj.)
     /// </summary>
     public static void Prewarm(AppSettings s, string why)
     {
@@ -131,15 +132,19 @@ public sealed class CaptureSession
             Current = session;
 
             // The monitor you are looking at first - the overlay appears there right away...
-            session.AddOverlay(first, ScreenCapturer.CaptureBitmap(first.Bounds), activate: true, show: true);
+            var front = session.AddOverlay(first, ScreenCapturer.CaptureBitmap(first.Bounds), activate: true, show: true);
             Log.Info($"Capture overlay ready in {sw.ElapsedMilliseconds} ms ({monitors.Count} monitors, {session._entries.Count} windows)");
 
-            // ...the other monitors follow a moment later (each overlay only covers its own screen).
+            // ...the other monitors follow once it is on screen (each overlay only covers its own screen). Not before:
+            // whatever a second window may ever have to wait for, the screen in front of you is not kept waiting with it.
             var rest = monitors.Where(m => m != first).ToList();
             if (rest.Count > 0)
             {
-                Application.Current.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+                bool started = false;
+                void AddRest()
                 {
+                    if (started) return;
+                    started = true;
                     try
                     {
                         foreach (var m in rest)
@@ -150,8 +155,14 @@ public sealed class CaptureSession
                         Log.Info($"All overlays ready in {sw.ElapsedMilliseconds} ms");
                     }
                     catch (Exception ex) { Log.Error("Secondary overlay failed", ex); }
-                }));
+                }
+                front.Revealed += () => Application.Current.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(AddRest));
+                // (should the first overlay never get to draw, the others still come)
+                var guard = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
+                guard.Tick += (_, _) => { guard.Stop(); AddRest(); };
+                guard.Start();
             }
+            front.Revealed += () => Log.Info($"Capture overlay on screen after {sw.ElapsedMilliseconds} ms");
         }
         catch (Exception ex)
         {

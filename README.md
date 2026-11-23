@@ -125,14 +125,14 @@ there is one (NVIDIA, AMD, Intel), frame-exact, with the banner's sound mixed in
 
 LinearFrame lives in the tray at **0 % CPU**. New versions download in the background, are verified (SHA-256) and installed
 **while you're not using the app** — no installer, no admin rights, no server: updates come straight from this repository's Releases.
-An update only downloads the app itself (about 55 MB); the engines are fetched again only when they actually changed.
+An update usually downloads only the app itself (a few MB); .NET and the engines are fetched again only when they actually changed.
 
 ---
 
 ## Download
 
 1. Download **`LinearFrame-x.y.z-win-x64.zip`** from [**Releases**](https://github.com/striktooo/LinearFrame/releases/latest).
-2. Unzip it anywhere and run **`LinearFrame.exe`**. Nothing to install, .NET is built in.
+2. Unzip it anywhere and run **`LinearFrame.exe`**. Nothing to install — the .NET it runs on is in the folder.
 3. SmartScreen may say *"Windows protected your PC"* (the app isn't code-signed yet): **More info → Run anyway**.
 
 It starts the moment you sign in to Windows — through a small task of your own in Task Scheduler, no admin rights (programs in
@@ -185,12 +185,30 @@ flowchart LR
 - The monitor under the cursor is captured first (GDI `BitBlt` of the DWM-composed desktop, ~30 ms for 1080p) and its overlay
   is shown immediately; the other monitors follow a moment later. Overlay windows are created **DWM-cloaked** and revealed only
   after their first frame is painted, so there's no flash. After start-up a tiny cloaked, click-through overlay is drawn in a
-  corner of every monitor, so WPF has its Direct3D device for each screen ready before you press the shortcut. Right after
-  Windows starts that set-up alone can take several seconds, so the warm-up is repeated a few times in the first minutes after
-  boot and after waking from sleep — the very first capture is as fast as every later one.
+  corner of every monitor, so the overlay's code and WPF's Direct3D device for each screen are ready before you press the
+  shortcut (again after a display change and after waking from sleep) — the very first capture is as fast as every later one.
 - Click-a-window uses `EnumWindows` + `DWMWA_EXTENDED_FRAME_BOUNDS` (real bounds without the invisible resize border),
   skipping cloaked, click-through and fully transparent overlay windows.
 - Everything is in physical pixels; WPF runs Per-Monitor-V2 DPI aware.
+</details>
+
+<details>
+<summary><b>Start-up: nothing is loaded at the moment you need it</b></summary>
+
+- LinearFrame starts when you sign in and, a few seconds later, goes through the motions once **out of sight**: the capture
+  overlay is drawn on every monitor, libmpv and FFmpeg are loaded, a player window plays a one-second silent clip (video
+  output, hardware decoder, shaders) and the viewer opens a small picture — in DWM-cloaked windows that never take the
+  focus, and never while a game or a film fills the screen. The first screenshot, film or photo after a restart is then as
+  quick as the tenth.
+- `LinearFrame.exe` is a small launcher (0.2 MB) next to `LinearFrame.dll`, running on its own copy of .NET in the `runtime`
+  folder (`AppHostRelativeDotNet` - nothing to install, and it looks nowhere else). Up to 1.2.0 it was one self-contained
+  146 MB exe, and that is what made the first screenshot after a restart wait for seconds: an antivirus reads such a file from
+  end to end the first time it is touched after a restart and after every update of its definitions (Microsoft Defender:
+  about 4 s for this one) — and the exe is touched all the time: WPF asks it for its icon whenever a window is created
+  (`ExtractIconEx`), and opening a file with LinearFrame starts it once more. A small exe is read in no time; the libraries
+  are checked once, when they load.
+- A second start (a file opened from Explorer) only looks for the running copy's lock and hands its command line over with
+  `WM_COPYDATA`, before any UI library is loaded — about 0.1 s.
 </details>
 
 <details>
@@ -257,10 +275,14 @@ flowchart LR
 <summary><b>Automatic updates (no server needed)</b></summary>
 
 1. Twice a day: `GET api.github.com/repos/striktooo/LinearFrame/releases/latest` (just the version number — no telemetry).
-2. A newer release → download `LinearFrame-x.y.z-win-x64.zip` from GitHub, verify it against the published `.sha256`.
+2. A newer release → download the smallest package that fits the installed copy and verify it against the published
+   `.sha256`: `-app.zip` (only the app's own files, a few MB), `-update.zip` (the app and its .NET) or the full
+   `-win-x64.zip`. A smaller package's `.sha256` also lists the files it counts on being installed already (the engines,
+   .NET) with their checksums — a copy that has exactly those takes it, any other one takes the next bigger package.
 3. While nothing is on screen, the files are swapped in place: Windows lets a running exe/DLL be *renamed*, so the old ones
    become `*.old`, the new ones are copied in, and the app restarts itself (rolling back if anything fails).
-4. The new instance cleans up. A version guard prevents update loops. It can be switched off in Settings.
+4. The new instance cleans up (old binaries, a replaced .NET version). A version guard prevents update loops. It can be
+   switched off in Settings.
 </details>
 
 <details>
@@ -270,6 +292,8 @@ flowchart LR
 |---|---|
 | Idle in the tray | **0 % CPU**, ~7 MB working set |
 | Ctrl+Shift+4 → overlay on screen | **~75–130 ms** (monitor under the cursor), ~250 ms for all three |
+| First film after a restart | window with its first picture after **~0.2 s** — like every later one |
+| A file opened from Explorer | ~0.1 s until the running app has it |
 | 1080p30 H.264 playback, controls hidden | **~0.6 % of total CPU** (≈10 % of one core, hardware decoding) |
 | Lossless cut-out of a 10 s clip | ~2–3 s, clean decode |
 | 520×300 screenshot → 8K export | ~2.4 s resample + ~2 s PNG |

@@ -25,6 +25,9 @@ namespace LinearFrame.Dev;
 /// </summary>
 internal static class SelfTest
 {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr LoadLibraryExW(string path, IntPtr file, uint flags);
+    [DllImport("kernel32.dll")] private static extern bool FreeLibrary(IntPtr module);
+
     private static readonly StringBuilder Report = new();
     private static int _failures;
 
@@ -945,23 +948,138 @@ internal static class SelfTest
                 return Environment.NewLine + string.Join(Environment.NewLine, report);
             });
 
-        Check("update: the small package is taken only when the installed engine matches", () =>
+        Check("update: the smallest package that fits the installed copy is taken", () =>
         {
             string app = Path.Combine(dir, "upd-app");
+            string net = Path.Combine(app, "runtime", "shared", "Microsoft.NETCore.App", "10.0.9");
             Directory.CreateDirectory(Path.Combine(app, "engine"));
+            Directory.CreateDirectory(net);
             File.WriteAllBytes(Path.Combine(app, "engine", "a.bin"), new byte[] { 1, 2, 3, 4 });
             File.WriteAllBytes(Path.Combine(app, "engine", "b.bin"), new byte[] { 9, 9 });
+            File.WriteAllBytes(Path.Combine(net, "core.dll"), new byte[] { 5, 5, 5 });
             static string H(params byte[] b) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(b));
-            string? Ask(string list) => Task.Run(() => Updater.SmallPackageHashAsync(list, app, default)).GetAwaiter().GetResult();
+            string? Ask(string list, string[] left) => Task.Run(() => Updater.PackageHashAsync(list, app, left, default)).GetAwaiter().GetResult();
             string zip = H(7);
-            string list = $"{zip}  LinearFrame-9.9.9-update.zip\r\n{H(1, 2, 3, 4)}  engine/a.bin\r\n{H(9, 9)}  engine/b.bin\r\n";
-            if (Ask(list) != zip) throw new Exception("matching engine not accepted");
-            if (Ask(list + $"{H(5)}  engine/missing.dll\n") != null) throw new Exception("a missing engine file must mean: full package");
-            if (Ask($"{zip}  x.zip\n{H(1)}  ../outside.bin\n") != null) throw new Exception("paths outside the engine folder must be refused");
-            if (Ask("not a checksum list") != null) throw new Exception("garbage accepted");
+            string engine = $"{H(1, 2, 3, 4)}  engine/a.bin\r\n{H(9, 9)}  engine/b.bin\r\n";
+            string update = $"{zip}  LinearFrame-9.9.9-update.zip\r\n{engine}";                 // the app and .NET
+            string appOnly = $"{zip}  LinearFrame-9.9.9-app.zip\r\n{engine}{H(5, 5, 5)}  runtime/shared/Microsoft.NETCore.App/10.0.9/core.dll\r\n";
+            if (Ask(update, Updater.EngineOnly) != zip) throw new Exception("matching engine not accepted");
+            if (Ask(appOnly, Updater.EngineAndRuntime) != zip) throw new Exception("matching engine and .NET not accepted");
+            if (Ask(appOnly, Updater.EngineOnly) != null) throw new Exception("a list naming .NET files must not pass as the package that brings .NET along");
+            if (Ask(update, Updater.EngineAndRuntime) != null) throw new Exception("a list that says nothing about .NET must not be enough for the app-only package");
+            if (Ask(update + $"{H(5)}  engine/missing.dll\n", Updater.EngineOnly) != null) throw new Exception("a missing engine file must mean: full package");
+            if (Ask($"{zip}  x.zip\n{H(1)}  ../outside.bin\n", Updater.EngineOnly) != null) throw new Exception("paths outside the engine folder must be refused");
+            if (Ask($"{zip}  x.zip\n{engine}{H(1)}  runtime/../engine/a.bin\n", Updater.EngineAndRuntime) != null) throw new Exception("paths climbing out of a folder must be refused");
+            if (Ask("not a checksum list", Updater.EngineOnly) != null) throw new Exception("garbage accepted");
+            if (Ask($"{zip}  only-the-zip.zip\n", Updater.EngineOnly) != null) throw new Exception("a list without any expected file accepted");
+            // an update brought another .NET: the app-only package no longer fits, the one with .NET still does
+            File.WriteAllBytes(Path.Combine(net, "core.dll"), new byte[] { 5, 5, 6 });
+            if (Ask(appOnly, Updater.EngineAndRuntime) != null) throw new Exception("a changed .NET must mean: the package with .NET");
+            if (Ask(update, Updater.EngineOnly) != zip) throw new Exception("a changed .NET must not rule out the package that brings .NET along");
             File.WriteAllBytes(Path.Combine(app, "engine", "b.bin"), new byte[] { 9, 8 });
-            if (Ask(list) != null) throw new Exception("a changed engine must mean: full package");
-            return "matching engine, changed engine, missing file, outside path, garbage: ok";
+            if (Ask(update, Updater.EngineOnly) != null) throw new Exception("a changed engine must mean: full package");
+            return "app only / app and .NET / full: matching, changed .NET, changed engine, missing file, outside path, garbage: ok";
+        });
+
+        Check("update: .NET versions an update has replaced are removed, the one in use stays", () =>
+        {
+            string rt = Path.Combine(dir, "upd-rt", "runtime");
+            string[] parents = { Path.Combine(rt, "host", "fxr"), Path.Combine(rt, "shared", "Microsoft.NETCore.App"), Path.Combine(rt, "shared", "Microsoft.WindowsDesktop.App") };
+            foreach (var v in new[] { "10.0.7", "10.0.9", "10.0.12" })
+                foreach (var parent in parents)
+                {
+                    Directory.CreateDirectory(Path.Combine(parent, v));
+                    File.WriteAllText(Path.Combine(parent, v, "x.dll"), v);
+                }
+            File.WriteAllText(Path.Combine(rt, "dotnet-LICENSE.txt"), "kept");
+            bool All(string v) => parents.All(parent => File.Exists(Path.Combine(parent, v, "x.dll")));
+            bool None(string v) => parents.All(parent => !Directory.Exists(Path.Combine(parent, v)));
+            // a build that does not run on this folder (a dev build on the installed .NET, the old one-file exe) removes nothing
+            if (Updater.RemoveOldRuntimes(rt, @"C:\Program Files\dotnet\shared\Microsoft.NETCore.App\10.0.9") != 0
+                || Updater.RemoveOldRuntimes(rt, null) != 0 || Updater.RemoveOldRuntimes(rt, "") != 0 || !All("10.0.7"))
+                throw new Exception("a copy that does not run on this runtime folder removed something from it");
+            int n = Updater.RemoveOldRuntimes(rt, Path.Combine(rt, "shared", "Microsoft.NETCore.App", "10.0.9"));
+            if (n != 3 || !None("10.0.7")) throw new Exception($"the replaced version 10.0.7 was not removed everywhere ({n} folders)");
+            if (!All("10.0.9")) throw new Exception("the version in use was touched");
+            if (!All("10.0.12")) throw new Exception("a newer version (10.0.12 is more than 10.0.9) was removed");
+            if (!File.Exists(Path.Combine(rt, "dotnet-LICENSE.txt"))) throw new Exception("a file beside the versions was removed");
+            if (Updater.RemoveOldRuntimes(rt, Path.Combine(rt, "shared", "Microsoft.NETCore.App", "10.0.9")) != 0) throw new Exception("second pass removed something");
+            return "older removed (3 folders), in use and newer kept, foreign runtime folders untouched";
+        });
+
+        Check("update: what the old one-file exe unpacked is removed only where no running copy uses it", () =>
+        {
+            string unpack = Path.Combine(dir, "upd-unpacked");
+            if (Directory.Exists(unpack)) Directory.Delete(unpack, true);
+            string busy = Path.Combine(unpack, "buildA"), idle = Path.Combine(unpack, "buildB");
+            Directory.CreateDirectory(busy);
+            Directory.CreateDirectory(idle);
+            // a real library, so Windows can load it the way a running copy has its unpacked libraries loaded
+            string lib = Path.Combine(Environment.SystemDirectory, "version.dll");
+            foreach (var d in new[] { busy, idle })
+            {
+                File.Copy(lib, Path.Combine(d, "loaded.dll"));
+                File.Copy(lib, Path.Combine(d, "not-loaded-yet.dll"));
+            }
+            IntPtr h = LoadLibraryExW(Path.Combine(busy, "loaded.dll"), IntPtr.Zero, 0x20 /* as a program image, nothing is run */);
+            if (h == IntPtr.Zero) throw new Exception("the test library could not be loaded");
+            try
+            {
+                int n = Updater.RemoveUnpackedLibraries(unpack);
+                if (n != 1 || Directory.Exists(idle)) throw new Exception($"the folder nobody uses was not removed ({n})");
+                if (!File.Exists(Path.Combine(busy, "loaded.dll")) || !File.Exists(Path.Combine(busy, "not-loaded-yet.dll")))
+                    throw new Exception("a file was taken away from a build whose library is loaded - that copy would fail later");
+            }
+            finally { FreeLibrary(h); }
+            if (Updater.RemoveUnpackedLibraries(unpack) != 1 || Directory.Exists(unpack)) throw new Exception("after that copy has ended its folder must go too (and the empty parent with it)");
+            if (Updater.RemoveUnpackedLibraries(unpack) != 0) throw new Exception("nothing left, yet something was removed");
+            return "unused build removed, a build in use left whole (also its not-yet-loaded files), removed once it is free";
+        });
+
+        Check("rehearsal: a clip and a picture are opened out of sight - nothing shows, nothing takes the focus, nothing is kept", () =>
+        {
+            var (clip, picture) = App.RehearsalFiles();
+            if (clip == null || !File.Exists(clip)) throw new Exception("the built-in clip is missing");
+            if (picture == null || ImageIO.Probe(picture) is not { ShownWidth: 960, ShownHeight: 600 }) throw new Exception("the rehearsal picture was not made");
+            var s = App.Instance!.Settings;
+            bool muted = s.PlayerMuted;
+            double volume = s.PlayerVolume;
+            int recent = s.RecentMedia.Count;
+            var seen = new HashSet<string>();
+            int inFront = 0, looks = 0;
+            // while a rehearsal runs: every window of ours that is "shown" must be out of sight (cloaked) and never in front
+            void Look()
+            {
+                looks++;
+                var front = Native.GetForegroundWindow();
+                foreach (Window w in Application.Current.Windows)
+                {
+                    if (!w.IsVisible) continue;
+                    var h = new System.Windows.Interop.WindowInteropHelper(w).Handle;
+                    if (h == IntPtr.Zero) continue;
+                    Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out int cloaked, sizeof(int));
+                    if (cloaked == 0) seen.Add(w.Title);
+                    if (h == front) inFront++;
+                }
+            }
+
+            string? player = null, viewer = null;
+            var pw = PlayerWindow.Rehearse(clip, how => player = how);
+            Pump(TimeSpan.FromSeconds(10), () => { Look(); return player != null; });
+            if (player == null) { pw.Close(); throw new Exception("the player's rehearsal never ended"); }
+            var vw = ImageViewerWindow.Rehearse(picture, how => viewer = how);
+            Pump(TimeSpan.FromSeconds(8), () => { Look(); return viewer != null; });
+            if (viewer == null) { vw.Close(); throw new Exception("the viewer's rehearsal never ended"); }
+            Pump(TimeSpan.FromMilliseconds(300), () => { Look(); return false; });
+
+            if (seen.Count > 0) throw new Exception("could be seen: " + string.Join(", ", seen));
+            if (inFront > 0) throw new Exception($"a rehearsal window was the window in front ({inFront} times)");
+            if (pw.IsVisible || vw.IsVisible) throw new Exception("a rehearsal window stayed open");
+            if (s.PlayerMuted != muted || s.PlayerVolume != volume) throw new Exception("the rehearsal changed the player's sound settings");
+            if (s.RecentMedia.Count != recent) throw new Exception("the rehearsal clip was added to the recent files");
+            if (!player.Contains("complete")) throw new Exception("the clip did not get to its first picture: " + player);
+            if (viewer.Contains("could not")) throw new Exception("the picture was not read: " + viewer);
+            return $"clip in {player}; picture in {viewer}; looked {looks} times: nothing visible, nothing in front";
         });
 
         Check("overlay: cost of drawing one frame without the GPU (1920×1080)", () =>

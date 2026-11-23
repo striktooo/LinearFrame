@@ -36,6 +36,10 @@ public partial class App
                 Log.Info($"Running updated version {Updater.Current}");
                 _tray?.ShowInfo("LinearFrame", L.F("Update.Done", Updater.Current));
             }
+            // The copy that started this one should be gone by now. One that does not manage to leave would stay behind
+            // for good, keeping its old files in use - seen with 1.2.0: after an automatic update its process was still
+            // there a minute later (with a warning in its log right after "Restarting"), holding the old 146 MB exe.
+            Task.Run(EndReplacedCopy);
         }
 
         // old binaries may stay locked for a moment by the previous process
@@ -55,6 +59,34 @@ public partial class App
             if (Settings.AutoUpdate) await CheckForUpdatesAsync(manual: false);
         };
         _updateTimer.Start();
+    }
+
+    /// <summary>Ends a copy of the previous version that is still running although it has handed over to this one.</summary>
+    private static void EndReplacedCopy()
+    {
+        try
+        {
+            using var self = Process.GetCurrentProcess();
+            string exe = AppPaths.ExePath;
+            foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(exe)))
+            {
+                using (p)
+                {
+                    try
+                    {
+                        if (p.Id == self.Id || p.SessionId != self.SessionId || p.StartTime >= self.StartTime) continue;
+                        // (a running exe that has been renamed still reports the name it was started under)
+                        string? path = p.MainModule?.FileName;
+                        if (path == null || !(path.Equals(exe, StringComparison.OrdinalIgnoreCase) || path.Equals(exe + ".old", StringComparison.OrdinalIgnoreCase))) continue;
+                        if (p.WaitForExit(4000)) continue;
+                        p.Kill();
+                        Log.Info($"The replaced copy (process {p.Id}) had not left by itself - ended");
+                    }
+                    catch { /* gone meanwhile, or not ours to look at */ }
+                }
+            }
+        }
+        catch (Exception ex) { Log.Warn("Looking for the replaced copy: " + ex.Message); }
     }
 
     public async Task<UpdateInfo?> CheckForUpdatesAsync(bool manual)
@@ -104,7 +136,8 @@ public partial class App
     {
         if (AvailableUpdate == null || _updateRoot != null) return;
         var u = AvailableUpdate;
-        var zip = await Updater.DownloadAsync(u, progress, CancellationToken.None);
+        // (off this thread: choosing the package means checksumming the installed engine and .NET - some 400 MB)
+        var zip = await Task.Run(() => Updater.DownloadAsync(u, progress, CancellationToken.None));
         _updateRoot = await Task.Run(() => Updater.Extract(zip, u.Version));
         Log.Info($"Update {u.Version} downloaded and verified");
     }
@@ -185,6 +218,8 @@ public partial class App
         psi.ArgumentList.Add($"--updated={v}");
         if (showSettings) psi.ArgumentList.Add("--settings");
         Process.Start(psi);
+        // the new copy is running: whatever happens on the way out, this one does not stay behind
+        new Thread(() => { Thread.Sleep(5000); Environment.Exit(0); }) { IsBackground = true, Name = "leave" }.Start();
 
         foreach (Window w in Windows.Cast<Window>().ToList())
         {

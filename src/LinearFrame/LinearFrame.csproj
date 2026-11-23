@@ -15,7 +15,7 @@
     <StartupObject>LinearFrame.Program</StartupObject>
     <ApplicationIcon Condition="Exists('Assets\LinearFrame.ico')">Assets\LinearFrame.ico</ApplicationIcon>
 
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <Product>LinearFrame</Product>
     <Description>Screenshots, media player and quick lossless trimming for Windows.</Description>
     <Copyright>LinearFrame contributors</Copyright>
@@ -31,14 +31,22 @@
     <NoWarn>$(NoWarn);CA1416;WPF0001</NoWarn>
   </PropertyGroup>
 
-  <!-- Release publish: one self-contained exe (no .NET install needed on the target PC) -->
+  <!-- Release publish: a small LinearFrame.exe + LinearFrame.dll that run on their own copy of .NET in the "runtime"
+       folder next to them (build.ps1 puts it there; the exe looks nowhere else) - no .NET install needed on the target PC.
+       Deliberately NOT one big self-contained exe (as up to 1.2.0): an antivirus reads such a 146 MB file from end to end
+       (Microsoft Defender: about 4 s) the first time it is touched after every restart and after every update of its
+       definitions - and it is touched all the time: WPF opens the exe for its icon whenever a window is created, and
+       opening a file with LinearFrame starts the exe once more. The first screenshot or opened file after a restart
+       waited for that. A 0.2 MB exe is read in no time, the libraries are read once when they load. -->
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <SelfContained>true</SelfContained>
-    <PublishSingleFile>true</PublishSingleFile>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+    <SelfContained>false</SelfContained>
     <PublishReadyToRun>true</PublishReadyToRun>
+    <AppHostRelativeDotNet>runtime</AppHostRelativeDotNet>
+    <!-- The source file names kept with the debug information (they show in the stack traces of the log, and in the
+         Source Link map to this repository) start at "/_/" = the repository - not at the folder the building machine
+         happens to keep it in, which would put that machine's user name into every released LinearFrame.dll. -->
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
   </PropertyGroup>
 
   <ItemGroup>
@@ -57,18 +65,21 @@
     <Resource Include="Assets\Fonts\*.ttf" />
     <!-- Polish emoji names and keywords for the emoji search (Unicode CLDR, Unicode License v3) -->
     <Resource Include="Assets\emoji-pl.txt.gz" />
+    <!-- one second of a dark, silent 320x180 picture (made with FFmpeg's "color" source): what the player plays out of
+         sight right after the app has started, so the first real film finds everything loaded (App.Rehearsal.cs) -->
+    <EmbeddedResource Include="Assets\rehearsal.mp4" LogicalName="LinearFrame.rehearsal.mp4" />
   </ItemGroup>
 
   <!-- Playback engine (libmpv) and ffmpeg live in an "engine" folder next to the exe -->
   <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\deps\mpv\libmpv-2.dll')">
-    <None Include="$(MSBuildThisFileDirectory)..\..\deps\mpv\libmpv-2.dll" Link="engine\libmpv-2.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)..\..\deps\mpv\libmpv-2.dll" Link="engine\libmpv-2.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
   <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\deps\ffmpeg\ffmpeg.exe')">
-    <None Include="$(MSBuildThisFileDirectory)..\..\deps\ffmpeg\ffmpeg.exe" Link="engine\ffmpeg.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)..\..\deps\ffmpeg\ffmpeg.exe" Link="engine\ffmpeg.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
   <!-- Text recognition: ONNX Runtime (+ the Visual C++ runtime it needs) and the PP-OCRv5 models -->
   <ItemGroup>
-    <None Include="$(MSBuildThisFileDirectory)..\..\deps\ocr\*.*" Link="engine\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)..\..\deps\ocr\*.*" Link="engine\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
 
 </Project>

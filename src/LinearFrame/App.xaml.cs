@@ -96,12 +96,13 @@ public partial class App : Application
         if (AppPaths.RegistersWithWindows) After(TimeSpan.FromSeconds(20), () => FileAssociations.RefreshIfRegistered(Player.MediaFormats.AssociationList));
 
         // The virtual HD screen is tidied away first (that changes the display set-up), then the capture overlays are
-        // warmed up on every monitor. Right after Windows has started, graphics drivers and screens keep settling for a
-        // few minutes - the warm-up is repeated then, so the first screenshot never waits for that.
+        // warmed up on every monitor - once more a minute later when Windows itself has only just started (screens and
+        // graphics drivers are still settling then) - so the first screenshot is as quick as every later one.
         After(TimeSpan.FromMilliseconds(1200), () => RefreshHd(tidy: true));
         WarmupIn("start", 2500);
-        if (uptimeS < 10 * 60)
-            foreach (int s in new[] { 30, 90, 240 }) After(TimeSpan.FromSeconds(s), () => WarmupIn("after Windows start", 0));
+        if (uptimeS < 10 * 60) After(TimeSpan.FromSeconds(60), () => WarmupIn("after Windows start", 0));
+        // ...and then the player and the picture viewer go through their motions once, out of sight (App.Rehearsal)
+        RehearseIn(6000);
 
         bool trayStart = args.Contains("--tray");
         HandleArgs(args.Where(a => a != "--tray").ToArray(), startup: true, trayStart: trayStart);
@@ -496,6 +497,7 @@ public partial class App : Application
 
     public void OpenMedia(string path, bool edit = false, bool cut = false)
     {
+        _playerUsed = true;
         if (_player == null)
         {
             MpvNative.Preload(); // (loads beside the window being built)
@@ -534,6 +536,7 @@ public partial class App : Application
             OpenMedia(path);
             return;
         }
+        _viewerUsed = true;
         if (_viewer == null)
         {
             _viewer = new ImageViewerWindow();

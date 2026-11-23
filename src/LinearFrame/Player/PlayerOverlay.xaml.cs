@@ -38,7 +38,7 @@ public partial class PlayerOverlay : Window
     /// <summary>The player window shows itself: so does its control layer.</summary>
     public void Uncloak()
     {
-        if (_hwnd != IntPtr.Zero && !AppPaths.Ghost) Native.SetCloak(_hwnd, false);
+        if (_hwnd != IntPtr.Zero && !UI.WindowHelper.IsUnseen(_player)) Native.SetCloak(_hwnd, false);
     }
     public event Action? ControlsVisibilityChanged;
 

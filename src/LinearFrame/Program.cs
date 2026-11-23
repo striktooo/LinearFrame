@@ -13,9 +13,21 @@ internal static class Program
     internal static bool IsStandaloneCommand(string[] args) => args.Length > 0 && args[0] is "--hd-setup" or "--selftest" or "--make-icon"
         or "--icon-preview" or "--qr-test" or "--ocr-test" or "--ocr-file" or "--ocr-exp" or "--render-ui" or "--marketing" or "--compose";
 
+    /// <summary>
+    /// What build.ps1 asks the finished package: does it start at all, and on the .NET in its own "runtime" folder?
+    /// (Exit code 0 = yes. No window, no single-instance lock, nothing written.)
+    /// </summary>
+    private static int RuntimeCheck()
+    {
+        string own = Path.Combine(AppContext.BaseDirectory, "runtime") + Path.DirectorySeparatorChar;
+        bool Ours(Type t) => t.Assembly.Location.StartsWith(own, StringComparison.OrdinalIgnoreCase);
+        return Ours(typeof(object)) && Ours(typeof(System.Windows.Window)) ? 0 : 3;
+    }
+
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 1 && args[0] == "--runtime-check") return RuntimeCheck();
         StartupTrace.Begin();
         if (!IsStandaloneCommand(args) && SingleInstance.RunsAlready())
         {

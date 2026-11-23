@@ -124,15 +124,15 @@ jeśli jest (NVIDIA, AMD, Intel), co do klatki, z dźwiękiem banera.
 
 LinearFrame siedzi w zasobniku i zużywa **0 % CPU**. Nowe wersje pobierają się w tle, są sprawdzane (SHA-256) i instalują się
 **wtedy, gdy nie korzystasz z aplikacji** — bez instalatora, bez uprawnień administratora i bez żadnego serwera: aktualizacje
-przychodzą prosto z zakładki Releases tego repozytorium. Aktualizacja pobiera tylko samą aplikację (ok. 55 MB); silnik wideo
-jest pobierany ponownie tylko wtedy, gdy naprawdę się zmienił.
+przychodzą prosto z zakładki Releases tego repozytorium. Aktualizacja pobiera zwykle tylko samą aplikację (kilka MB); .NET
+i silniki są pobierane ponownie tylko wtedy, gdy naprawdę się zmieniły.
 
 ---
 
 ## Pobieranie
 
 1. Pobierz **`LinearFrame-x.y.z-win-x64.zip`** z [**Releases**](https://github.com/striktooo/LinearFrame/releases/latest).
-2. Rozpakuj gdziekolwiek i uruchom **`LinearFrame.exe`**. Nic nie instalujesz, .NET jest w środku.
+2. Rozpakuj gdziekolwiek i uruchom **`LinearFrame.exe`**. Nic nie instalujesz — .NET, na którym działa, jest w folderze.
 3. Jeśli pojawi się „System Windows ochronił ten komputer” (aplikacja nie ma jeszcze certyfikatu podpisu):
    **Więcej informacji → Uruchom mimo to**.
 
@@ -188,12 +188,30 @@ flowchart LR
 - Najpierw zrzucany jest monitor pod kursorem (GDI `BitBlt` skomponowanego pulpitu, ok. 30 ms dla 1080p) i od razu pokazuje się
   jego nakładka; pozostałe monitory dochodzą chwilę później. Okna nakładki powstają jako „ukryte w DWM” (cloak) i odsłaniają się
   dopiero po namalowaniu pierwszej klatki — bez mignięcia. Po starcie w rogu każdego monitora rysuje się malutka, ukryta
-  i przezroczysta dla myszy nakładka, więc WPF ma gotowe urządzenie Direct3D dla każdego ekranu, zanim naciśniesz skrót. Tuż po
-  starcie Windows samo to przygotowanie potrafi trwać kilka sekund, dlatego „rozgrzewka” powtarza się kilka razy w pierwszych
-  minutach po uruchomieniu systemu i po wybudzeniu — już pierwszy zrzut jest tak szybki jak kolejne.
+  i przezroczysta dla myszy nakładka, więc kod nakładki i urządzenie Direct3D WPF-a dla każdego ekranu są gotowe, zanim
+  naciśniesz skrót (ponownie po zmianie ekranów i po wybudzeniu) — już pierwszy zrzut jest tak szybki jak kolejne.
 - Klikanie okien: `EnumWindows` + `DWMWA_EXTENDED_FRAME_BOUNDS` (prawdziwe granice bez niewidzialnej ramki), z pominięciem okien
   ukrytych, przezroczystych dla myszy i nakładek typu overlay.
 - Wszystko w fizycznych pikselach; WPF działa w trybie Per-Monitor-V2 DPI.
+</details>
+
+<details>
+<summary><b>Start: nic nie ładuje się dopiero wtedy, gdy tego potrzebujesz</b></summary>
+
+- LinearFrame startuje przy logowaniu i kilka sekund później robi wszystko raz „na sucho”, **poza zasięgiem wzroku**: rysuje
+  nakładkę zrzutu na każdym monitorze, ładuje libmpv i FFmpeg, w oknie odtwarzacza puszcza sekundowy, niemy klip (wyjście
+  wideo, dekoder sprzętowy, shadery), a w przeglądarce otwiera mały obrazek — w oknach ukrytych w DWM, które nigdy nie
+  przejmują fokusu, i nigdy wtedy, gdy ekran zajmuje gra albo film. Pierwszy zrzut, film czy zdjęcie po restarcie jest dzięki
+  temu tak szybkie jak dziesiąte.
+- `LinearFrame.exe` to mały program startowy (0,2 MB) obok `LinearFrame.dll`, działający na własnej kopii .NET w folderze
+  `runtime` (`AppHostRelativeDotNet` — nic nie instalujesz, a exe nigdzie indziej nie szuka). Do wersji 1.2.0 był to jeden
+  samowystarczalny plik exe o rozmiarze 146 MB i to przez niego pierwszy zrzut po restarcie czekał kilka sekund: antywirus
+  czyta taki plik od początku do końca przy pierwszym dotknięciu po restarcie i po każdej aktualizacji swoich definicji
+  (Microsoft Defender: ok. 4 s dla tego pliku) — a ten plik jest dotykany bez przerwy: WPF pyta go o ikonę przy tworzeniu
+  każdego okna (`ExtractIconEx`), a otwarcie pliku w LinearFrame uruchamia exe jeszcze raz. Mały exe czyta się w mgnieniu
+  oka; biblioteki są sprawdzane raz, przy ładowaniu.
+- Drugie uruchomienie (plik otwarty z Eksploratora) sprawdza tylko blokadę działającej kopii i przekazuje jej wiersz
+  poleceń przez `WM_COPYDATA`, zanim załaduje się jakakolwiek biblioteka interfejsu — ok. 0,1 s.
 </details>
 
 <details>
@@ -263,10 +281,14 @@ flowchart LR
 <summary><b>Automatyczne aktualizacje (bez serwera)</b></summary>
 
 1. Dwa razy dziennie: `GET api.github.com/repos/striktooo/LinearFrame/releases/latest` (tylko numer wersji — zero telemetrii).
-2. Nowsza wersja → pobranie `LinearFrame-x.y.z-win-x64.zip` z GitHuba i sprawdzenie z opublikowanym `.sha256`.
+2. Nowsza wersja → pobranie najmniejszej paczki, która pasuje do zainstalowanej kopii, i sprawdzenie jej z opublikowanym
+   `.sha256`: `-app.zip` (tylko pliki samej aplikacji, kilka MB), `-update.zip` (aplikacja i jej .NET) albo pełna
+   `-win-x64.zip`. Plik `.sha256` mniejszej paczki wymienia też pliki, które mają już być zainstalowane (silniki, .NET),
+   z ich sumami kontrolnymi — kopia, która ma dokładnie takie, bierze tę paczkę, każda inna bierze następną, większą.
 3. Gdy nic nie jest otwarte, pliki są podmieniane w miejscu: Windows pozwala *zmienić nazwę* działającego exe/DLL, więc stare stają
    się `*.old`, nowe są kopiowane, a aplikacja sama się restartuje (z wycofaniem zmian, jeśli coś pójdzie nie tak).
-4. Nowa instancja sprząta. Zabezpieczenie wersji chroni przed zapętleniem. Można to wyłączyć w Ustawieniach.
+4. Nowa instancja sprząta (stare pliki, zastąpioną wersję .NET). Zabezpieczenie wersji chroni przed zapętleniem. Można to
+   wyłączyć w Ustawieniach.
 </details>
 
 <details>
@@ -276,6 +298,8 @@ flowchart LR
 |---|---|
 | Bezczynność w zasobniku | **0 % CPU**, ~7 MB pamięci roboczej |
 | Ctrl+Shift+4 → nakładka na ekranie | **~75–130 ms** (monitor pod kursorem), ~250 ms wszystkie trzy |
+| Pierwszy film po restarcie | okno z pierwszym obrazem po **~0,2 s** — jak każdy kolejny |
+| Plik otwarty z Eksploratora | ~0,1 s, zanim dostanie go działająca aplikacja |
 | Odtwarzanie 1080p30 H.264, ukryte kontrolki | **~0,6 % całego CPU** (≈10 % jednego rdzenia, dekodowanie sprzętowe) |
 | Bezstratne wycięcie fragmentu z klipu 10 s | ~2–3 s, czyste dekodowanie |
 | Zrzut 520×300 → eksport 8K | ~2,4 s skalowanie + ~2 s PNG |

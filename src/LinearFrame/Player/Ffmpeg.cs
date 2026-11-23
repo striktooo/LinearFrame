@@ -90,6 +90,28 @@ internal static class Ffmpeg
         catch { return null; }
     }
 
+    /// <summary>
+    /// Starts ffmpeg.exe once and lets it say its version. Windows - and the antivirus, which reads a program through
+    /// the first time it is started after a restart or an update of its definitions - have then dealt with the 100 MB
+    /// file; the first waveform, cover or filmstrip of the session no longer waits for that. (Call off the UI thread.)
+    /// </summary>
+    public static bool Warm()
+    {
+        if (!Available) return false;
+        try
+        {
+            using var p = Process.Start(Start(new[] { "-hide_banner", "-version" }));
+            if (p == null) return false;
+            try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { /* exited already */ }
+            p.StandardError.ReadToEndAsync().Forget();
+            p.StandardOutput.ReadToEndAsync().Forget();
+            if (p.WaitForExit(8000)) return p.ExitCode == 0;
+            try { p.Kill(true); } catch { /* gone */ }
+            return false;
+        }
+        catch { return false; }
+    }
+
     // Starting ffmpeg.exe takes Windows a moment (tens to hundreds of ms for a 100 MB program) - and an "async" method
     // runs on its caller's thread up to its first wait. Called from a window, that moment froze the window (a song's
     // player started two of them before it could show itself). So each of these begins on a worker thread.

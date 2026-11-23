@@ -57,9 +57,11 @@ AKTUALIZACJE
   LinearFrame sam sprawdza nowe wersje na GitHubie i instaluje je po cichu, gdy z niego nie korzystasz.
   Wyłączysz to w Ustawieniach → Aktualizacje.
 
-FOLDER „engine”
-  libmpv-2.dll (silnik odtwarzania), ffmpeg.exe (edycja wideo), onnxruntime.dll z modelami PP-OCRv5 (czytanie tekstu
-  na zdjęciach) i biblioteki Visual C++, których potrzebuje — nie usuwaj go.
+FOLDERY „engine” I „runtime”
+  engine:  libmpv-2.dll (silnik odtwarzania), ffmpeg.exe (edycja wideo), onnxruntime.dll z modelami PP-OCRv5 (czytanie
+           tekstu na zdjęciach) i biblioteki Visual C++, których potrzebuje.
+  runtime: .NET, na którym działa aplikacja (własna kopia — niczego nie trzeba instalować).
+  Nie usuwaj ich, tak samo jak plików LinearFrame.dll i LinearFrame.*.json obok LinearFrame.exe — to wszystko jedna aplikacja.
 
 ODINSTALOWANIE
   W Ustawieniach wyłącz „Uruchamiaj razem z Windows” (a w „Zrzuty HD” kliknij „Usuń sterownik”, jeśli go instalowałeś), zakończ aplikację

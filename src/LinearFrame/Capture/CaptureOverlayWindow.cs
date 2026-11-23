@@ -54,6 +54,9 @@ public sealed class CaptureOverlayWindow : Window
     /// <summary>Fired once the window has drawn its first frame (it stays invisible - see <see cref="CaptureSession.Prewarm"/>).</summary>
     public event Action? WarmedUp;
 
+    /// <summary>Fired when the overlay comes into view (its first frame is drawn).</summary>
+    public event Action? Revealed;
+
     public CaptureOverlayWindow(CaptureSession session, MonitorInfo monitor, BitmapSource shot, List<Int32Rect> windows, bool activate, bool warmup = false)
     {
         Interlocked.Increment(ref _alive);
@@ -73,7 +76,7 @@ public sealed class CaptureOverlayWindow : Window
         Cursor = Cursors.Cross;
         UseLayoutRounding = true;
         Focusable = true;
-        ShowActivated = activate;
+        ShowActivated = activate && !AppPaths.Ghost;
         WindowStartupLocation = WindowStartupLocation.Manual;
         Left = monitor.Bounds.X / monitor.Scale;
         Top = monitor.Bounds.Y / monitor.Scale;
@@ -174,6 +177,8 @@ public sealed class CaptureOverlayWindow : Window
     private void Reveal()
     {
         Scale = WindowHelper.DpiScale(this);
+        Revealed?.Invoke();
+        if (AppPaths.Ghost) return; // a test copy that must not be seen: everything but this
         Native.SetCloak(_hwnd, false);
         if (_activateOnShow)
         {

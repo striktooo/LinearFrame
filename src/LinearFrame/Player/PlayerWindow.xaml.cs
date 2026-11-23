@@ -57,6 +57,21 @@ public partial class PlayerWindow : Window
     public IntPtr Handle => _hwnd;
     public bool IsPaused => (_mpv?.Paused ?? true) && !_resumeAfterScrub;
 
+    // A rehearsal (see App.Rehearsal): right after LinearFrame has started, a player window opens a tiny silent clip out
+    // of sight and closes again. Everything the first real film or song would otherwise have to wait for - the player
+    // library, the graphics card's video decoder, the window itself - is loaded by then.
+    private bool _rehearsal;
+    private Action<string>? _rehearsed;
+
+    /// <summary>Plays <paramref name="clip"/> in a window nobody sees; <paramref name="done"/> gets one line on how it went.</summary>
+    internal static PlayerWindow Rehearse(string clip, Action<string> done)
+    {
+        var w = new PlayerWindow { _rehearsal = true, _rehearsed = done, _pendingOpen = clip, _askedAt = Environment.TickCount64 };
+        WindowHelper.MakeUnseen(w);
+        w.Show();
+        return w;
+    }
+
     public PlayerWindow()
     {
         InitializeComponent();
@@ -111,7 +126,8 @@ public partial class PlayerWindow : Window
         }
         try
         {
-            _mpv = new MpvPlayer(_host.VideoHandle, Dispatcher, _s.PlayerVolume, _s.PlayerMuted);
+            _mpv = _rehearsal ? new MpvPlayer(_host.VideoHandle, Dispatcher, 0, muted: true)
+                              : new MpvPlayer(_host.VideoHandle, Dispatcher, _s.PlayerVolume, _s.PlayerMuted);
             _mpv.StateChanged += OnMpvState;
             _mpv.FileLoaded += OnFileLoaded;
             _mpv.EndFile += OnEndFile;
@@ -148,9 +164,12 @@ public partial class PlayerWindow : Window
         _pictureLog?.Stop();
         if (_mpv != null)
         {
-            _s.PlayerVolume = _mpv.Volume;
-            _s.PlayerMuted = _mpv.Muted;
-            _s.Save();
+            if (!_rehearsal)
+            {
+                _s.PlayerVolume = _mpv.Volume;
+                _s.PlayerMuted = _mpv.Muted;
+                _s.Save();
+            }
             var mpv = _mpv;
             _mpv = null;
             mpv.Dispose();
@@ -474,11 +493,29 @@ public partial class PlayerWindow : Window
         if (!_cloaked) return;
         _cloaked = false;
         UpdateOverlayBounds();
-        if (!AppPaths.Ghost) Native.SetCloak(_hwnd, false);
+        if (_rehearsal)
+        {
+            // this is where a real window would appear: the rehearsal is over (the picture gets a moment to reach the
+            // graphics card, then everything is put away again)
+            string how = $"{Environment.TickCount64 - _askedAt} ms ({why}; player ready after {_engineMs}, file read {_loadedMs}, first picture {_pictureMs} ms" +
+                         $"{(_mpv != null ? $", decoder {_mpv.GetString("hwdec-current") ?? "?"}" : "")})";
+            var end = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+            end.Tick += (_, _) =>
+            {
+                end.Stop();
+                var done = _rehearsed;
+                _rehearsed = null;
+                try { Close(); } finally { done?.Invoke(how); }
+            };
+            end.Start();
+            return;
+        }
+        bool unseen = WindowHelper.IsUnseen(this);
+        if (!unseen) Native.SetCloak(_hwnd, false);
         _overlay?.Uncloak();
         Native.GetWindowRect(_hwnd, out var r);
         Log.Info($"Player window shown {Environment.TickCount64 - _askedAt} ms after the file was asked for ({why}; player ready after {_engineMs}, file read {_loadedMs}, first picture {_pictureMs} ms): " +
-                 $"{r.Width}x{r.Height} at {r.Left},{r.Top}{(AppPaths.Ghost ? " [ghost: kept out of sight]" : "")}");
+                 $"{r.Width}x{r.Height} at {r.Left},{r.Top}{(unseen ? " [ghost: kept out of sight]" : "")}");
         LogPictureSoon();
     }
 
@@ -490,6 +527,7 @@ public partial class PlayerWindow : Window
     /// </summary>
     private void LogPictureSoon()
     {
+        if (_rehearsal) return;
         if (_pictureLog == null)
         {
             _pictureLog = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };

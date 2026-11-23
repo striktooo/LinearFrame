@@ -35,6 +35,36 @@ public partial class ImageViewerWindow : Window
     private readonly LiveText _live;
     private CancellationTokenSource? _liveCts;
 
+    // A rehearsal (see App.Rehearsal): right after LinearFrame has started, a viewer window opens a small picture out of
+    // sight and closes again - the first photo you open finds the window and the picture decoders already loaded.
+    private bool _rehearsal;
+    private Action<string>? _rehearsed;
+    private long _askedAt;
+    private bool _timed;
+
+    /// <summary>Opens <paramref name="picture"/> in a window nobody sees; <paramref name="done"/> gets one line on how it went.</summary>
+    internal static ImageViewerWindow Rehearse(string picture, Action<string> done)
+    {
+        var w = new ImageViewerWindow { _rehearsal = true, _rehearsed = done };
+        WindowHelper.MakeUnseen(w);
+        w.Open(picture);
+        return w;
+    }
+
+    private void EndRehearsal(string how)
+    {
+        // (the picture gets a moment to be drawn, then everything is put away again)
+        var end = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+        end.Tick += (_, _) =>
+        {
+            end.Stop();
+            var done = _rehearsed;
+            _rehearsed = null;
+            try { Close(); } finally { done?.Invoke(how); }
+        };
+        end.Start();
+    }
+
     public ImageViewerWindow()
     {
         InitializeComponent();
@@ -57,6 +87,8 @@ public partial class ImageViewerWindow : Window
     /// <summary>Shows a picture (the window sizes itself to it the first time).</summary>
     public void Open(string path, ImageIO.ImageInfo? info = null)
     {
+        _askedAt = Environment.TickCount64;
+        _timed = false;
         if (!_shown)
         {
             SizeTo(info ?? ImageIO.Probe(path));
@@ -138,6 +170,12 @@ public partial class ImageViewerWindow : Window
         catch (Exception ex) { Log.Warn($"Viewer: {Path.GetFileName(path)} could not be decoded: {ex.Message}"); }
         if (id != _loadId) return; // the next picture was asked for meanwhile
 
+        if (_rehearsal)
+        {
+            if (info != null && bmp != null) View.SetPicture(bmp, info.ShownWidth, info.ShownHeight, info.HasAlpha);
+            EndRehearsal($"{Environment.TickCount64 - _askedAt} ms{(bmp == null ? " (the picture could not be read)" : "")}");
+            return; // (no text is read, nothing else is loaded)
+        }
         if (info == null || bmp == null)
         {
             View.Clear();
@@ -151,6 +189,12 @@ public partial class ImageViewerWindow : Window
         _full = bmp.PixelWidth >= info.ShownWidth;
         View.SetPicture(bmp, info.ShownWidth, info.ShownHeight, info.HasAlpha);
         InfoText.Text = $"{info.ShownWidth} × {info.ShownHeight}";
+        if (!_timed)
+        {
+            // (one line per opened file - walking on through the folder with the arrow keys is not timed)
+            _timed = true;
+            Log.Info($"Picture shown {Environment.TickCount64 - _askedAt} ms after it was asked for ({info.ShownWidth}x{info.ShownHeight})");
+        }
         ReadText(id, bmp, info, flipping);
         if (View.WantsMorePixels) LoadFull();
         Memory.TrimSoon(4000); // the previous picture's pixels go back

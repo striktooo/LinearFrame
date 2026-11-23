@@ -20,9 +20,10 @@ git push origin v1.0.1
 
 GitHub Actions (plik `.github/workflows/release.yml`) sam:
 1. pobierze libmpv i FFmpeg,
-2. zbuduje `LinearFrame.exe` w wersji z tagu (np. 1.0.1),
-3. spakuje `LinearFrame-1.0.1-win-x64.zip` (pełna paczka dla nowych osób) i `LinearFrame-1.0.1-update.zip` (mała paczka
-   bez folderu `engine` — zainstalowane kopie pobierają ją zamiast pełnej, gdy mpv/FFmpeg się nie zmieniły), obie z plikiem
+2. zbuduje aplikację w wersji z tagu (np. 1.0.1) i dołoży do niej .NET (folder `runtime`),
+3. spakuje `LinearFrame-1.0.1-win-x64.zip` (pełna paczka dla nowych osób), `LinearFrame-1.0.1-update.zip` (bez folderu
+   `engine` — biorą ją zainstalowane kopie, w których mpv/FFmpeg się nie zmieniły) i `LinearFrame-1.0.1-app.zip` (same
+   pliki aplikacji, kilka MB — biorą ją kopie od wersji 1.2.1, w których nie zmienił się też .NET), każdą z plikiem
    `.sha256`, i opublikuje je w **Releases**.
 
 Postęp zobaczysz w zakładce **Actions** (ok. 5–10 minut). Numer wersji w `LinearFrame.csproj` nie musi być ręcznie zmieniany —

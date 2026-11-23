@@ -260,6 +260,7 @@ public sealed class CaptureToast : Window
         {
             _hwnd = new WindowInteropHelper(this).Handle;
             Native.AddExStyle(_hwnd, Native.WS_EX_NOACTIVATE | Native.WS_EX_TOOLWINDOW);
+            if (AppPaths.Ghost) Native.SetCloak(_hwnd, true); // a test copy that must not be seen
         };
         Loaded += (_, _) => PlaceAndAnimate();
         Closed += (_, _) => { if (_current == this) _current = null; Memory.TrimSoon(); };
