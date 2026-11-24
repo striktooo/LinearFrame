@@ -64,8 +64,8 @@ and puts the window back. The frozen overlay hides all of it; your real monitor,
 
 Arrows, highlighter, pen, text, numbered steps and a **blur/pixelate** tool for
 anything private. Every mark stays editable (move, resize, recolour) with unlimited undo. **Text** is the video editor's caption
-tool itself: TikTok Sans with an outline, a plate or plain, TikTok's colours and the iPhone emoji gallery; drag a corner to
-resize — the lines stay as you typed them.
+tool itself: TikTok Sans with an outline, a plate or plain, white, black or any colour from the palette, and the iPhone emoji
+gallery; drag a corner to resize — the lines stay as you typed them.
 
 **Crop & extend** is the trick you won't find elsewhere: drag the frame *outwards* and LinearFrame detects the background colour
 of the screenshot and fills the new space with it — seamlessly. One click gives you **16:9, 4:3, 1:1 or 9:16** with an even margin,
@@ -97,14 +97,30 @@ barcode — go to **PaddleOCR PP-OCRv5**, which finds every line at any angle, s
 engine; line by line the better reading wins, and Polish letters the photo model drops are put back from Windows' own spelling
 dictionary.
 
-### ✂️ Video editor — cuts, captions, emoji, a banner, any format
+### ✂️ Video editor — cuts, captions, layers, pictures, a banner, any format
 ![Video editor](docs/images/video-editor.png)
 
 Click ✂️ in the controls (or press **E**) and the editor opens under the video, with the film strip and the waveform:
 
 - **Split** at the playhead and **Delete** pieces — cut out as many fragments as you like. **Join** adds another video after this one.
 - **Text** — captions in TikTok's own font (TikTok Sans): white with a black outline by default, a background plate, or plain;
-  TikTok's colours, any size; drag them anywhere on the video (they snap to the middle), double-click to retype.
+  any size; drag them anywhere on the video (they snap to the middle), double-click to retype. Colour: **white**, **black**,
+  or the **colour wheel** — it opens a palette with every colour, the caption follows the mouse over it, and the colours you
+  used lately wait underneath. Select a part of the text first and only that part takes the colour. **Aa** switches to a font
+  of your own: import `.ttf` / `.otf` files once, they stay in the list.
+- **Layers** — duplicate the video (**Format** → the copy button, or **Ctrl+D** with nothing picked up) and the same video is
+  there once more, in a frame of its own with its own zoom. A 16:9 stream becomes a 9:16 clip with the
+  camera on the upper half and the game on the lower one: the first layer shares the frame with the video — two halves, each
+  filled — then the wheel zooms into what the cursor is on (up to 24×, enough for a small camera picture in a corner) and
+  dragging moves the video inside its frame. The frame's handles change what part of the picture a layer takes, the knob under
+  its top edge moves the whole layer; frames snap to the edges, the middle and each other. Every layer has its bar on the time
+  line and can be there for only a part of the video.
+- **Picture** — puts a picture (a logo, a meme, a photo) on the video: move it, resize it, trim its bar on the time line.
+- **Duplicate** (Ctrl+D) makes a second one of whatever is picked up — a layer, a picture, a caption, an emoji; **Mirror**
+  flips a layer, the video itself, a picture or an emoji.
+- **The lanes under the film strip are the stack on the video**: the top lane is in front. The banner is always on top, then
+  captions and pictures, the layers of the video at the bottom. Drag a bar up or down and it goes in front of or behind the
+  others — sideways it moves in time, as before.
 - **Emoji** — the smiley next to the caption opens the real iPhone emoji gallery (Apple's artwork, downloaded once): recently
   used first and a search in Polish and English ("serce", "ogień", "fire"…). A caption of just an emoji is a sticker.
 - **Banner** — puts your brand banner (a video with transparency, e.g. a ProRes 4444 .mov) at the playhead: the video keeps
@@ -113,8 +129,8 @@ Click ✂️ in the controls (or press **E**) and the editor opens under the vid
 - **Format** — 9:16, 1:1, 4:5, 16:9 or the original; fit or fill, zoom and drag the video inside the frame, blurred or black
   background, resolution.
 
-The preview plays live in the player (the GPU frames the video, the banner runs in a layer of its own), with undo/redo for
-everything. **Save as new clip** or **Replace original** (the original goes to the Recycle Bin): cuts of one file are copied
+The preview plays live in the player (the GPU frames the video, the banner runs in a layer of its own; with video layers the
+frame is drawn by the very filter graph that makes the file), with undo/redo for everything. **Save as new clip** or **Replace original** (the original goes to the Recycle Bin): cuts of one file are copied
 bit for bit — no quality loss, seconds even for 4 GB; everything else is rendered once to MP4 (H.264), on the graphics card when
 there is one (NVIDIA, AMD, Intel), frame-exact, with the banner's sound mixed in.
 
@@ -132,8 +148,37 @@ An update usually downloads only the app itself (a few MB); .NET and the engines
 ## Download
 
 1. Download **`LinearFrame-x.y.z-win-x64.zip`** from [**Releases**](https://github.com/striktooo/LinearFrame/releases/latest).
-2. Unzip it anywhere and run **`LinearFrame.exe`**. Nothing to install — the .NET it runs on is in the folder.
-3. SmartScreen may say *"Windows protected your PC"* (the app isn't code-signed yet): **More info → Run anyway**.
+2. Unzip the whole folder first (right-click → *Extract all*; it cannot start from inside the ZIP), then run
+   **`LinearFrame.exe`**. Nothing to install — the .NET it runs on is in the folder.
+3. **The first time, Windows shows a blue window — "Windows protected your PC". Click *More info*, then *Run anyway*.**
+
+<img src="docs/images/first-run.png" width="760" alt="The blue Windows window: 1 - More info, 2 - Run anyway">
+
+<details>
+<summary><b>Why does Windows warn — and is it safe?</b></summary>
+
+LinearFrame is not code-signed yet. Microsoft Defender SmartScreen shows this window for every program without a digital
+signature until enough people have run that exact file — and for an unsigned program the count starts again with every
+version ([Microsoft's description](https://learn.microsoft.com/windows/apps/package-and-deploy/smartscreen-reputation)).
+It means "this file is not known yet", not "a virus was found": the antivirus part of Defender scans the package like any
+other download and finds nothing (every release is checked that way before it is published).
+
+- You see the window **once**. Later versions install themselves from inside the app and never show it.
+- Every release is built from the source in this repository, and each ZIP comes with its SHA-256 checksum.
+- On PCs where **Smart App Control** is on (many new Windows 11 PCs) there is no *Run anyway*: Windows lets
+  `LinearFrame.exe` start, then blocks the unsigned `LinearFrame.dll`, and the app quits without a window (the event
+  log says *An Application Control policy has blocked this file*, 0x800711C7). Windows offers no exception for a single
+  app, so on such a PC LinearFrame runs only once it is signed. Code signing is planned.
+</details>
+
+<details>
+<summary><b>Uninstall</b></summary>
+
+Settings → switch off *Start with Windows* (and *HD captures → Remove the driver*, if you installed it), quit the app
+(tray icon → *Quit*), then delete the folder and the *LinearFrame* shortcut in the Start menu. If you made LinearFrame the
+default app for videos, music or pictures, pick another one in Windows Settings → Default apps. Settings are in
+`%APPDATA%\LinearFrame`, logs and caches in `%LOCALAPPDATA%\LinearFrame`, your screenshots in `Pictures\LinearFrame`.
+</details>
 
 It starts the moment you sign in to Windows — through a small task of your own in Task Scheduler, no admin rights (programs in
 the classic "Run" list are held back by Windows for 20–30 s); switch it off in Settings. To open videos, music or pictures with it by default: *Player → Use LinearFrame for videos, music and pictures*;
@@ -148,7 +193,7 @@ shows at a glance what is what; video files also get **Edit with LinearFrame** i
 | While selecting | **Ctrl+C / Enter** copy & save · **Ctrl+C+C** add to the clipboard · **T** copy the text · **E** edit · **Ctrl+S** save as · **Esc** cancel · **arrows** nudge · right-click clears |
 | Editor | **V P H A T N B** tools · **C** crop & extend · **Ctrl+Z / Ctrl+Shift+Z** · **Ctrl+C** copy · **Ctrl+S** done |
 | Player | **Space** pause · **← →** 5 s · **J L** 10 s · **, .** frame step · **↑ ↓** volume · **M** mute · **F** full screen · **Ctrl+C** copy frame · **E** video editor |
-| Video editor | **Space** play · **← →** one frame (**Shift** 1 s) · **S** split · **Delete** delete · **T** text · **Ctrl+Z / Ctrl+Y** · **Esc** done / leave |
+| Video editor | **Space** play · **← →** one frame (**Shift** 1 s) · **S** split · **Delete** delete · **T** text · **I** picture · **Ctrl+D** duplicate (nothing picked up: the video, as a layer) · **Ctrl+Z / Ctrl+Y** · **Esc** done / leave |
 | Pictures | **← →** previous / next · **wheel** zoom · **double-click**, **0 / 1** whole picture / actual pixels · **Ctrl+C** copy (the selected text first) · **Ctrl+A** select all text · **E** edit · **Esc** close |
 
 Command line: `LinearFrame.exe video.mp4` · `--trim video.mp4` · `--cut video.mp4` · `--capture` · `--settings` · `--exit`
@@ -259,6 +304,12 @@ flowchart LR
   freezes). A freeze is mpv pausing itself on the exact frame (checked on mpv's event thread) while a clock runs.
 - Format preview: mpv renders only into the part of the frame the video covers and `video-zoom`/`video-pan` put the picture where
   it is - the GPU does it, playback stays as smooth as without a format. The blurred background is a WPF layer behind it.
+- Video layers: one FFmpeg filter graph (`EditGraph`) puts the frame together - the canvas (black, or a blurred copy of the
+  video) and every layer cut out of the clip *before* it is scaled (crop → scale → exact crop), so a camera picture zoomed in
+  twenty times costs as much as the small piece it is. The same graph, at the size the frame has on screen, runs inside mpv
+  as a `lavfi` video filter (the decoder hands its frames over in memory for it) - what is seen is what is saved. A paused
+  mpv needs 80–250 ms for every change (it decodes its frame again), too slow to follow a hand: while a layer is dragged, the
+  editor draws the layers itself from the frame under the playhead, with every move of the mouse, and mpv catches up underneath.
 - The banner preview is a click-through layered window fed with premultiplied frames that FFmpeg decodes on the fly, at exactly
   the size shown, into a short queue (a handful of frames, however big the window).
 - **Copy** (only cuts of one file): one piece = `ffmpeg -ss -t -c copy` (MP4/MOV keep a frame-accurate start thanks to an edit
@@ -302,8 +353,10 @@ flowchart LR
 <details>
 <summary><b>Privacy</b></summary>
 
-No accounts, no telemetry, no analytics. The only network traffic is the update check against this repository's GitHub
-Releases (and the download of an update), which you can switch off. Screenshots never leave your PC unless you share them.
+No accounts, no telemetry, no analytics — nothing about you or your files is sent anywhere. LinearFrame goes online for
+three things only: the update check against this repository's GitHub Releases and the download of an update (you can switch
+it off); the emoji pictures, fetched once from jsDelivr the first time you open the emoji gallery; and the virtual display
+driver, fetched from its GitHub repository when you switch HD captures on. Screenshots never leave your PC unless you share them.
 </details>
 
 ---

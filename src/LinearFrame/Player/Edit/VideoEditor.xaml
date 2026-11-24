@@ -73,6 +73,9 @@
                     <Button x:Name="TextBtn" Style="{StaticResource Tool}" Click="Text_Click" ToolTip="{core:Loc Edit.TextTip}">
                         <StackPanel Orientation="Horizontal"><ui:IconView Icon="text" Width="16" Height="16"/><TextBlock Text="{core:Loc Edit.Text}" Margin="6,0,0,0"/></StackPanel>
                     </Button>
+                    <Button x:Name="ImageBtn" Style="{StaticResource Tool}" Click="Image_Click" ToolTip="{core:Loc Edit.ImageTip}">
+                        <StackPanel Orientation="Horizontal"><ui:IconView Icon="image" Width="16" Height="16"/><TextBlock Text="{core:Loc Edit.Image}" Margin="6,0,0,0"/></StackPanel>
+                    </Button>
                     <Button x:Name="BannerBtn" Style="{StaticResource Tool}" Click="Banner_Click" MouseRightButtonUp="Banner_RightClick" ToolTip="{core:Loc Edit.BannerTip}">
                         <StackPanel Orientation="Horizontal"><ui:IconView Icon="banner" Width="16" Height="16"/><TextBlock Text="{core:Loc Edit.Banner}" Margin="6,0,0,0"/></StackPanel>
                     </Button>
@@ -103,9 +106,16 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="ItemTitle" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                <TextBlock x:Name="ItemTitle" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="{core:Loc Edit.Size}" Style="{StaticResource Caption}" Margin="0,0,10,0"/>
+                    <!-- a video layer: the whole video in its frame, or the frame filled -->
+                    <Border x:Name="LayerFit" Background="#2C2C2E" CornerRadius="8" Padding="2" Margin="0,0,16,0" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Style="{StaticResource Hud.Button}" Background="Transparent" Content="{core:Loc Edit.Fit}" Click="LayerFit_Click" Padding="10,4"/>
+                            <Button Style="{StaticResource Hud.Button}" Background="Transparent" Content="{core:Loc Edit.Fill}" Click="LayerFill_Click" Padding="10,4"/>
+                        </StackPanel>
+                    </Border>
+                    <TextBlock x:Name="ItemSizeLabel" Text="{core:Loc Edit.Size}" Style="{StaticResource Caption}" Margin="0,0,10,0"/>
                     <pl:ThinSlider x:Name="ItemSize" Width="160" VerticalAlignment="Center"/>
                     <Border x:Name="BannerPlace" Background="#2C2C2E" CornerRadius="8" Padding="2" Margin="16,0,0,0">
                         <StackPanel Orientation="Horizontal">
@@ -116,6 +126,8 @@
                     </Border>
                 </StackPanel>
                 <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <Button x:Name="ItemFlip" Style="{StaticResource Hud.IconButton}" Click="Flip_Click" ToolTip="{core:Loc Edit.Flip}"><ui:IconView Icon="flip" Width="18" Height="18"/></Button>
+                    <Button x:Name="ItemDuplicate" Style="{StaticResource Hud.IconButton}" Click="Duplicate_Click" ToolTip="{core:Loc Edit.Duplicate}"><ui:IconView Icon="copy" Width="17" Height="17"/></Button>
                     <Button Style="{StaticResource Hud.IconButton}" Click="ItemDelete_Click" ToolTip="{core:Loc Edit.DeleteTip}"><ui:IconView Icon="trash" Width="17" Height="17"/></Button>
                     <Button Style="{StaticResource Hud.Yellow}" Content="{core:Loc Edit.Done}" Click="Done_Click" Margin="6,0,0,0"/>
                 </StackPanel>
@@ -150,6 +162,9 @@
                         <pl:ThinSlider x:Name="ZoomSlider" Width="96" VerticalAlignment="Center"/>
                         <ui:IconView Icon="plus" Width="13" Height="13" Foreground="#A1A1A6" Margin="6,0,0,0"/>
                     </StackPanel>
+                    <Button Style="{StaticResource Hud.IconButton}" Click="Flip_Click" ToolTip="{core:Loc Edit.Flip}" Margin="8,0,0,0" VerticalAlignment="Center"><ui:IconView Icon="flip" Width="18" Height="18"/></Button>
+                    <!-- the video once more, as a layer of its own (a stream's camera above its game) -->
+                    <Button x:Name="VideoDuplicate" Style="{StaticResource Hud.IconButton}" Click="Duplicate_Click" ToolTip="{core:Loc Edit.DuplicateVideo}" VerticalAlignment="Center"><ui:IconView Icon="copy" Width="17" Height="17"/></Button>
                     <TextBlock Text="{core:Loc Edit.Background}" Style="{StaticResource Caption}" Margin="16,0,8,0"/>
                     <Border Background="#2C2C2E" CornerRadius="8" Padding="2" VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal">

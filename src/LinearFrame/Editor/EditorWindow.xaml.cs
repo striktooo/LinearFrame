@@ -51,7 +51,8 @@ public partial class EditorWindow : Window
         View.CaptionResized += c => { if (ReferenceEquals(c, _caption)) Caption.ShowSize(c.Size); };
         Caption.TextEdited += OnCaptionText;
         Caption.StyleChosen += style => ChangeCaption(c => c.Style = style);
-        Caption.ColorChosen += color => ChangeCaption(c => c.Color = color);
+        Caption.ColorChosen += OnCaptionColor;
+        Caption.FontChosen += font => ChangeCaption(c => c.Font = font);
         Caption.SizeChosen += OnCaptionSize;
         Caption.DeleteRequested += () => { View.DeleteSelected(); OnDocChanged(); };
         Caption.Finished += FinishCaption;
@@ -235,11 +236,40 @@ public partial class EditorWindow : Window
     {
         if (_caption == null) return;
         if (!_captionTyped) { _doc.Checkpoint(); _captionTyped = true; }
+        _caption.Spans = ColorSpans.Rebase(_caption.Spans, _caption.Text, text); // coloured words stay coloured
         _caption.Text = text;
         // typing breaks lines at the picture's width; making it bigger later only scales it
         _caption.WrapEm = Captions.WrapEmFor(_caption.Size, _caption.CanvasWidth, _caption.CanvasHeight);
         View.RenderAll();
         OnDocChanged();
+    }
+
+    private bool _captionColored;
+
+    /// <summary>
+    /// A colour from the caption tool: a selected part of the text takes it; nothing selected - the whole caption does.
+    /// While the mouse moves over the palette the caption follows; the whole pick is one step to undo.
+    /// </summary>
+    private void OnCaptionColor(Color color, int start, int length, bool final)
+    {
+        if (_caption is { } c)
+        {
+            var whole = length > 0 ? c.Color : color;
+            var spans = length > 0 ? ColorSpans.Paint(c.Spans, start, length, color) : Array.Empty<ColorSpan>();
+            // the colour it already has: nothing to draw, and no step to undo that would undo nothing
+            if (whole != c.Color || ColorSpans.Key(spans) != ColorSpans.Key(c.Spans))
+            {
+                if (!_captionColored) { _doc.Checkpoint(); _captionColored = true; }
+                c.Color = whole;
+                c.Spans = spans;
+                View.RenderAll();
+            }
+        }
+        if (final && _captionColored)
+        {
+            _captionColored = false;
+            OnDocChanged();
+        }
     }
 
     private void ChangeCaption(Action<CaptionAnnotation> change)

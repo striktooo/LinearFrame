@@ -134,6 +134,11 @@ public sealed class CaptionAnnotation : Annotation, ICaption
     public double CanvasWidth { get; set; } = 1000;
     public double CanvasHeight { get; set; } = 1000;
 
+    /// <summary>Parts of the text in a colour of their own (a change is a new list, never an edit in place).</summary>
+    public IReadOnlyList<ColorSpan> Spans { get; set; } = Array.Empty<ColorSpan>();
+    /// <summary>An imported font; null = TikTok Sans.</summary>
+    public string? Font { get; set; }
+
     Color ICaption.Color => Color;
 
     private (string Key, Captions.Layout Layout)? _layout;
@@ -141,7 +146,7 @@ public sealed class CaptionAnnotation : Annotation, ICaption
     /// <summary>Laid out once per text / look / size (hit tests and the selection frame ask for it all the time).</summary>
     public Captions.Layout Layout()
     {
-        string key = FormattableString.Invariant($"{Text}|{Style}|{Size}|{WrapEm}|{CanvasWidth}|{CanvasHeight}");
+        string key = FormattableString.Invariant($"{Captions.LookKey(this)}|{CanvasWidth}|{CanvasHeight}");
         if (_layout is { } l && l.Key == key) return l.Layout;
         var layout = Captions.Arrange(this, CanvasWidth, CanvasHeight);
         _layout = (key, layout);
@@ -161,7 +166,7 @@ public sealed class CaptionAnnotation : Annotation, ICaption
     public override Annotation Clone() => new CaptionAnnotation
     {
         Color = Color, Width = Width, Center = Center, Text = Text, Style = Style, Size = Size, WrapEm = WrapEm,
-        CanvasWidth = CanvasWidth, CanvasHeight = CanvasHeight,
+        CanvasWidth = CanvasWidth, CanvasHeight = CanvasHeight, Spans = Spans, Font = Font,
     };
 
     public override void Offset(Vector v) => Center += v;

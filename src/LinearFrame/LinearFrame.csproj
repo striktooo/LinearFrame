@@ -15,7 +15,7 @@
     <StartupObject>LinearFrame.Program</StartupObject>
     <ApplicationIcon Condition="Exists('Assets\LinearFrame.ico')">Assets\LinearFrame.ico</ApplicationIcon>
 
-    <Version>1.2.1</Version>
+    <Version>1.3.0</Version>
     <Product>LinearFrame</Product>
     <Description>Screenshots, media player and quick lossless trimming for Windows.</Description>
     <Copyright>LinearFrame contributors</Copyright>

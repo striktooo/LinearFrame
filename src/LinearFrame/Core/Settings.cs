@@ -135,6 +135,8 @@ public sealed class AppSettings
     public List<string> RecentMedia { get; set; } = new();
     /// <summary>Emoji picked lately in the video editor (newest first).</summary>
     public List<string> RecentEmoji { get; set; } = new();
+    /// <summary>Colours picked lately for captions from the full palette (#RRGGBB, newest first).</summary>
+    public List<string> RecentColors { get; set; } = new();
     /// <summary>The banner file the editor's "Banner" button adds.</summary>
     public string? BannerPath { get; set; }
 
@@ -161,6 +163,7 @@ public sealed class AppSettings
                     s.ClearClipboardHotkey ??= new();
                     s.RecentMedia ??= new();
                     s.RecentEmoji ??= new();
+                    s.RecentColors ??= new();
                     return s;
                 }
             }

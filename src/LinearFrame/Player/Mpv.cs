@@ -432,6 +432,41 @@ public sealed unsafe class MpvPlayer : IDisposable
         fixed (byte* n = Utf8(name)) fixed (byte* v = Utf8(value)) return MpvNative.mpv_set_property_string(_ctx, n, v);
     }
 
+    private string? _composite;
+
+    /// <summary>The picture goes through a filter graph before it is shown (the editor's video layers).</summary>
+    public bool HasComposite => _composite != null;
+
+    /// <summary>
+    /// A libavfilter graph that puts the picture together before it is shown - or none (null). While one is set the
+    /// decoded frames are handed over in memory (the filters run on the processor; frames left on the graphics card
+    /// are refused by them - the player does not fetch them back by itself) and the filter itself stands a sideways
+    /// phone video up (the player does not turn a filtered picture). A paused player shows the new picture after a
+    /// refresh of the frame it is on - <see cref="SeekLanded"/> tells when.
+    /// </summary>
+    public void SetComposite(string? graph)
+    {
+        if (graph == _composite || _ctx == IntPtr.Zero) return;
+        bool was = _composite != null;
+        _composite = graph;
+        if (graph == null)
+        {
+            SetProperty("vf", "");
+            SetProperty("video-rotate", "0");
+            SetProperty("hwdec", "auto-safe");
+            return;
+        }
+        if (!was)
+        {
+            string before = GetString("hwdec-current") ?? "?";
+            if (SetProperty("hwdec", "auto-copy-safe") < 0) SetProperty("hwdec", "auto-copy");
+            SetProperty("video-rotate", "no");
+            Log.Info($"Layers: the picture is put together by a filter now (decoder was {before})");
+        }
+        int r = SetProperty("vf", $"lavfi=graph=%{System.Text.Encoding.UTF8.GetByteCount(graph)}%{graph}");
+        if (r < 0) Log.Warn($"The layer filter was refused ({ErrorString(r)}): {graph.Replace("\n", " ")}");
+    }
+
     public string? GetString(string name)
     {
         if (_ctx == IntPtr.Zero) return null;

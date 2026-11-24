@@ -25,6 +25,10 @@ public sealed class EditTimeline : FrameworkElement
     private static readonly Brush TextBar = Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0xB3, 0x40)));
     private static readonly Brush EmojiBar = Frozen(new SolidColorBrush(Color.FromRgb(0xBF, 0x5A, 0xF2)));
     private static readonly Brush BannerBar = Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0x5E, 0x57)));
+    private static readonly Brush LayerBar = Frozen(new SolidColorBrush(Color.FromRgb(0x0A, 0x84, 0xFF)));
+    private static readonly Brush ImageBar = Frozen(new SolidColorBrush(Color.FromRgb(0x30, 0xD1, 0x58)));
+    /// <summary>How many lanes of items are shown under the film strip (more than that many things at one moment is rare).</summary>
+    private const int MaxLanes = 6;
     private static readonly Brush TrimDim = Frozen(new SolidColorBrush(Color.FromArgb(0xB0, 0x10, 0x10, 0x12)));
     private static readonly Brush GhostWave = Frozen(new SolidColorBrush(Color.FromArgb(0x55, 0x8E, 0x8E, 0x93)));
     private static readonly Pen HeadShadow = Frozen(new Pen(new SolidColorBrush(Color.FromArgb(0x70, 0, 0, 0)), 4));
@@ -71,6 +75,13 @@ public sealed class EditTimeline : FrameworkElement
     public event Action<EditOverlay, double, double, bool>? OverlayMoved;
     /// <summary>A piece's start or end edge was dragged: (segment, start?, the clip second shown at the edge, final).</summary>
     public event Action<int, bool, double, bool>? SegmentTrimmed;
+    /// <summary>
+    /// A bar was dragged to another lane: the item is to go right in front of the other one (true) or right behind it
+    /// (false). The drag ends with <see cref="OverlayMoved"/> (final) when the bar was also moved in time, else with
+    /// <see cref="ReorderEnded"/>.
+    /// </summary>
+    public event Action<EditOverlay, EditOverlay, bool>? OverlayReordered;
+    public event Action? ReorderEnded;
 
     public EditTimeline()
     {
@@ -162,15 +173,18 @@ public sealed class EditTimeline : FrameworkElement
         if (Project == null) return;
         _pieces = Project.Pieces();
         _bars.Clear();
-        var laneEnds = new List<double>();
-        foreach (var o in Project.Overlays.Select(o => (O: o, S: Project.Span(o))).OrderBy(x => x.S.F0))
+        // The lanes are the stack of what lies on the video, the top lane in front: every bar sits right under whatever
+        // is in front of it at the same time (things that are never on screen together can share a lane).
+        int used = 0;
+        foreach (var (o, f0, f1) in Stack(Project))
         {
-            int lane = laneEnds.FindIndex(e => e <= o.S.F0 + 1e-6);
-            if (lane < 0) { lane = laneEnds.Count; laneEnds.Add(0); }
-            laneEnds[lane] = o.S.F1;
-            _bars.Add((o.O, lane, o.S.F0, o.S.F1));
+            int lane = 0;
+            foreach (var b in _bars)
+                if (f0 < b.F1 - 1e-6 && b.F0 < f1 - 1e-6) lane = Math.Max(lane, b.Lane + 1);
+            _bars.Add((o, lane, f0, f1));
+            used = Math.Max(used, lane + 1);
         }
-        int lanes = Math.Clamp(laneEnds.Count, 1, 4);
+        int lanes = Math.Clamp(used, 1, MaxLanes);
         if (lanes != _lanes) { _lanes = lanes; InvalidateMeasure(); }
         if (SelectedSegment >= Project.Segments.Count) SelectedSegment = -1;
         if (SelectedOverlay != null && !Project.Overlays.Contains(SelectedOverlay)) SelectedOverlay = null;
@@ -197,6 +211,70 @@ public sealed class EditTimeline : FrameworkElement
 
     // a drawing asked for on the next frame (a 1000 Hz mouse moves far more often than the screen shows anything)
     private bool _contentPending;
+
+    /// <summary>
+    /// What kind of thing an item is in the stack on the video: a banner lies on top of everything (0), captions,
+    /// pictures and emoji under it (1), layers of the video at the bottom (2). Within a kind the order can be changed.
+    /// </summary>
+    internal static int Kind(EditOverlay o) => o is BannerOverlay ? 0 : o is VideoLayer ? 2 : 1;
+
+    /// <summary>The items front first (what the top lane shows first), each with when it is on screen in the finished video.</summary>
+    internal static List<(EditOverlay O, double F0, double F1)> Stack(EditProject p) =>
+        p.Overlays.Select((o, i) => (O: o, I: i, S: p.Span(o)))
+            .OrderBy(x => Kind(x.O)).ThenByDescending(x => x.I)
+            .Select(x => (x.O, x.S.F0, x.S.F1)).ToList();
+
+    /// <summary>Which lane an item's bar is in (0 = the top one, in front); -1 when it has no bar.</summary>
+    internal int LaneOf(EditOverlay o)
+    {
+        foreach (var b in _bars)
+            if (ReferenceEquals(b.O, o)) return b.Lane;
+        return -1;
+    }
+
+    /// <summary>Where an item's bar is (for tests: where the mouse has to go).</summary>
+    internal Rect BarOf(EditOverlay o)
+    {
+        foreach (var (item, lane, f0, f1) in _bars)
+            if (ReferenceEquals(item, o)) return new Rect(X(f0), LanesTop + lane * (LaneH + LaneGap), Math.Max(6, X(f1) - X(f0)), LaneH);
+        return Rect.Empty;
+    }
+
+    // ---- a bar dragged up or down: the item goes in front of / behind the others of its kind that share its time
+
+    private int _askedLane = int.MinValue;
+    private bool _reordered, _movedInTime;
+
+    /// <summary>
+    /// The dragged bar's item is to go to another lane. Up: in front of everything of its kind, on screen at the same
+    /// time, from that lane down. Down: behind everything of its kind from that lane up. Asked once per lane the mouse
+    /// enters - where the bar then lands follows from the new order.
+    /// </summary>
+    private void DragToLane(EditOverlay item, int lane)
+    {
+        if (Project == null || item is BannerOverlay) return;
+        int cur = LaneOf(item);
+        lane = Math.Clamp(lane, 0, _lanes);
+        if (cur < 0 || lane == cur || lane == _askedLane) return;
+        _askedLane = lane;
+        var mine = _bars.First(b => ReferenceEquals(b.O, item));
+        bool up = lane < cur;
+        EditOverlay? pivot = null;
+        int pivotIndex = up ? -1 : int.MaxValue;
+        foreach (var b in _bars)
+        {
+            if (ReferenceEquals(b.O, item) || Kind(b.O) != Kind(item)) continue;
+            if (!(mine.F0 < b.F1 - 1e-6 && b.F0 < mine.F1 - 1e-6)) continue;   // never on screen together: no order between them
+            // only what the bar passes on its way: the lanes between where it is and where it goes
+            if (up ? b.Lane < lane || b.Lane >= cur : b.Lane > lane || b.Lane <= cur) continue;
+            int i = Project.Overlays.IndexOf(b.O);
+            // up: the front-most of those passed; down: the back-most of those passed
+            if (up ? i > pivotIndex : i < pivotIndex) { pivotIndex = i; pivot = b.O; }
+        }
+        if (pivot == null) return;
+        _reordered = true;
+        OverlayReordered?.Invoke(item, pivot, up);
+    }
 
     private void RequestContent()
     {
@@ -336,11 +414,11 @@ public sealed class EditTimeline : FrameworkElement
 
         foreach (var (o, lane, f0, f1) in _bars)
         {
-            if (lane >= 4) continue;
+            if (lane >= MaxLanes) continue;
             double x0 = Math.Max(X(f0), -20), x1 = Math.Min(X(f1), w + 20);
             if (x1 < 0 || x0 > w) continue;
             var bar = new Rect(x0, LanesTop + lane * (LaneH + LaneGap), Math.Max(6, x1 - x0), LaneH);
-            Brush fill = o switch { TextOverlay => TextBar, EmojiOverlay => EmojiBar, _ => BannerBar };
+            Brush fill = o switch { TextOverlay => TextBar, EmojiOverlay => EmojiBar, VideoLayer => LayerBar, ImageOverlay => ImageBar, _ => BannerBar };
             dc.DrawRoundedRectangle(fill, null, bar, 6, 6);
             if (o is BannerOverlay b)
             {
@@ -491,6 +569,28 @@ public sealed class EditTimeline : FrameworkElement
                 label = Core.L.T("Edit.BannerBar") + "  " + Path.GetFileNameWithoutExtension(b.Asset.Path);
                 ink = Brushes.White;
                 break;
+            case VideoLayer:
+                label = "▶   " + Core.L.T("Edit.LayerBar");
+                ink = Brushes.White;
+                break;
+            case ImageOverlay im:
+            {
+                // the picture itself, small, in front of its name
+                double left = bar.Left + 6;
+                var thumb = EditImages.Preview(im.Path);
+                if (thumb != null && bar.Width > 40)
+                {
+                    double th = bar.Height - 6, tw = Math.Min(th * im.Aspect, 46);
+                    dc.PushClip(new RectangleGeometry(new Rect(left, bar.Top + 3, tw, th), 3, 3));
+                    dc.DrawImage(thumb, new Rect(left + (tw - th * im.Aspect) / 2, bar.Top + 3, th * im.Aspect, th));
+                    dc.Pop();
+                    left += tw + 6;
+                }
+                var name = new FormattedText(Path.GetFileNameWithoutExtension(im.Path), CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, Ui, 11.5, Brushes.Black, dpi)
+                    { MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis, MaxTextWidth = Math.Max(10, bar.Right - left - 6) };
+                if (bar.Right - left > 24) dc.DrawText(name, new Point(left, bar.Top + (bar.Height - name.Height) / 2));
+                return;
+            }
             default:
                 return;
         }
@@ -523,11 +623,19 @@ public sealed class EditTimeline : FrameworkElement
     {
         base.OnMouseLeftButtonDown(e);
         if (Project == null) return;
-        var p = e.GetPosition(this);
-        double f = Math.Clamp(F(p.X), 0, Total);
         CaptureMouse();
         e.Handled = true;
+        PressAt(e.GetPosition(this));
+    }
+
+    /// <summary>The left button went down at a point of the time line.</summary>
+    internal void PressAt(Point p)
+    {
+        if (Project == null) return;
+        double f = Math.Clamp(F(p.X), 0, Total);
         _pressF = f;
+        _askedLane = int.MinValue;
+        _reordered = _movedInTime = false;
 
         // lanes: captions, emoji, banners
         if (p.Y >= LanesTop)
@@ -593,8 +701,13 @@ public sealed class EditTimeline : FrameworkElement
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        MoveTo(e.GetPosition(this));
+    }
+
+    /// <summary>The mouse is at a point of the time line: what is held follows it.</summary>
+    internal void MoveTo(Point p)
+    {
         if (Project == null) return;
-        var p = e.GetPosition(this);
         double f = F(p.X);
         switch (_drag)
         {
@@ -616,7 +729,14 @@ public sealed class EditTimeline : FrameworkElement
                 if (_drag == Drag.Bar) { d = Math.Clamp(d, -a, Total - b); a += d; b += d; }
                 else if (_drag == Drag.BarStart) a = Math.Clamp(a + d, 0, b - 0.2);
                 else b = Math.Clamp(b + d, a + 0.2, Total);
-                OverlayMoved?.Invoke(_dragItem, a, b, false);
+                // across: its time (only once the hand has really moved across - a bar pulled straight up or down keeps its place)
+                if (Math.Abs(d) * _pps > 2 || _movedInTime)
+                {
+                    _movedInTime = true;
+                    OverlayMoved?.Invoke(_dragItem, a, b, false);
+                }
+                // up or down, into another lane: its place in the stack
+                if (_drag == Drag.Bar) DragToLane(_dragItem, (int)Math.Floor((p.Y - LanesTop) / (LaneH + LaneGap)));
                 return;
             case Drag.TrimStart:
             case Drag.TrimEnd:
@@ -638,11 +758,17 @@ public sealed class EditTimeline : FrameworkElement
     {
         base.OnMouseLeftButtonUp(e);
         if (Project == null) return;
-        var p = e.GetPosition(this);
+        ReleaseAt(e.GetPosition(this));
+        ReleaseMouseCapture();
+    }
+
+    /// <summary>The left button came up at a point of the time line.</summary>
+    internal void ReleaseAt(Point p)
+    {
+        if (Project == null) return;
         double f = F(p.X);
         var drag = _drag;
         _drag = Drag.None;
-        ReleaseMouseCapture();
         switch (drag)
         {
             case Drag.Seek: Seek?.Invoke(Math.Clamp(f, 0, Total), true); break;
@@ -655,10 +781,12 @@ public sealed class EditTimeline : FrameworkElement
                     if (drag == Drag.Bar) { d = Math.Clamp(d, -a, Total - b); a += d; b += d; }
                     else if (drag == Drag.BarStart) a = Math.Clamp(a + d, 0, b - 0.2);
                     else b = Math.Clamp(b + d, a + 0.2, Total);
-                    if (Math.Abs(f - _pressF) * _pps > 2) OverlayMoved?.Invoke(_dragItem, a, b, true);
+                    if (Math.Abs(f - _pressF) * _pps > 2 || _movedInTime) OverlayMoved?.Invoke(_dragItem, a, b, true);
+                    else if (_reordered) ReorderEnded?.Invoke(); // only moved to another lane: its time is not touched
                     else Seek?.Invoke(Math.Clamp(f, 0, Total), true); // a click on a bar also moves the playhead there
                 }
                 _dragItem = null;
+                _movedInTime = _reordered = false;
                 break;
             case Drag.TrimStart:
             case Drag.TrimEnd:

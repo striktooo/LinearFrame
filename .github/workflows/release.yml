@@ -55,9 +55,12 @@ jobs:
           $ff = Get-Content deps/ffmpeg/VERSION.txt -ErrorAction SilentlyContinue
           $notes = @"
           ## Download
-          **LinearFrame-${{ github.ref_name }}-win-x64.zip** — unzip and run ``LinearFrame.exe`` (Windows 10/11, 64-bit, no installation needed).
+          **LinearFrame-${{ github.ref_name }}-win-x64.zip** — unzip the whole folder and run ``LinearFrame.exe`` (Windows 10/11, 64-bit, no installation needed).
+          The first time, Windows shows a blue window, "Windows protected your PC" (the app is not code-signed yet): **More info → Run anyway**. Once only — updates install themselves.
 
-          Pobierz ZIP, rozpakuj i uruchom ``LinearFrame.exe``. Jeśli pojawi się „System Windows ochronił ten komputer”: *Więcej informacji → Uruchom mimo to*.
+          Pobierz ZIP, rozpakuj cały folder i uruchom ``LinearFrame.exe``. Za pierwszym razem Windows pokaże niebieskie okno „System Windows ochronił ten komputer” (aplikacja nie ma jeszcze podpisu cyfrowego): **Więcej informacji → Uruchom mimo to**. Tylko raz — aktualizacje instalują się same.
+
+          <img src="https://raw.githubusercontent.com/striktooo/LinearFrame/main/docs/images/first-run-pl.png" width="720" alt="1 - Więcej informacji / More info, 2 - Uruchom mimo to / Run anyway">
 
           Bundled engine: $mpv · $ff
           "@

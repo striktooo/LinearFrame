@@ -27,6 +27,8 @@ internal static class SelfTest
 {
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr LoadLibraryExW(string path, IntPtr file, uint flags);
     [DllImport("kernel32.dll")] private static extern bool FreeLibrary(IntPtr module);
+    /// <summary>The next window in the stack of windows (2 = the one below).</summary>
+    [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr hwnd, uint cmd);
 
     private static readonly StringBuilder Report = new();
     private static int _failures;
@@ -2258,7 +2260,7 @@ internal static class SelfTest
             p.Canvas.Format = CanvasFormat.Vertical;
             p.Canvas.Background = CanvasBackground.Blur;
             p.Overlays.Add(new TextOverlay { Text = "Siema 😂\nLinearFrame", Start = 0, End = 14, X = 0.5, Y = 0.28, Size = 0.04 });
-            p.Overlays.Add(new TextOverlay { Text = "Tło", Style = CaptionStyle.Fill, Color = Captions.Palette[3], Start = 0, End = 14, X = 0.5, Y = 0.9, Size = 0.035 });
+            p.Overlays.Add(new TextOverlay { Text = "Tło", Style = CaptionStyle.Fill, Color = Color.FromRgb(0xFF, 0x93, 0x3D), Start = 0, End = 14, X = 0.5, Y = 0.9, Size = 0.035 });
             p.Overlays.Add(new EmojiOverlay { Unified = "1f525", Start = 1, End = 5, X = 0.82, Y = 0.12, Size = 0.1 });
             var bo = new BannerOverlay { Asset = info, At = 3, X = 0.5, Y = 0.66, Size = 0.9 };
             p.Overlays.Add(bo);
@@ -2295,6 +2297,8 @@ internal static class SelfTest
             Save(FrameAt(output, want - 1, 640), Path.Combine(dir, "edit-all-joined.png"));
             return $"{d:0.00}s (wanted {want:0.00}) in {ms} ms with {EditExport.EncoderAsync().GetAwaiter().GetResult()}; freeze diff {still:0.0}, moving diff {moving:0.0}; {streams}";
         });
+
+        LayerChecks(dir, mp4, banner, () => info);
 
         var realBanner = Environment.GetEnvironmentVariable("LF_SELFTEST_BANNER");
         if (!string.IsNullOrEmpty(realBanner) && File.Exists(realBanner))
@@ -2630,7 +2634,7 @@ internal static class SelfTest
                 {
                     new TextOverlay { Text = "Biały napis z czarnym obrysem 😂", Style = CaptionStyle.Stroke, Size = 0.07 },
                     new TextOverlay { Text = "Tło za tekstem\nw dwóch liniach", Style = CaptionStyle.Fill, Color = Colors.White, Size = 0.07 },
-                    new TextOverlay { Text = "Kolorowe tło", Style = CaptionStyle.Fill, Color = Captions.Palette[3], Size = 0.07 },
+                    new TextOverlay { Text = "Kolorowe tło", Style = CaptionStyle.Fill, Color = Color.FromRgb(0xFF, 0x93, 0x3D), Size = 0.07 },
                     new TextOverlay { Text = "Bez niczego 🔥", Style = CaptionStyle.None, Size = 0.07 },
                 };
                 double y = 90;
@@ -2649,6 +2653,943 @@ internal static class SelfTest
         });
 
         Check("editor live: under the video, cut + caption + banner + 9:16, the freeze plays on time", () => EditorLive(dir, mp4, banner));
+        Check("layers live: in the editor a layer shares the picture and the player shows it - zoomed, mirrored, with a picture, while playing", () => LayersLive(dir, banner));
+        // developer measurement: how long a change of a layer takes to reach the screen on a given file (LF_LAYER_TIMING=file)
+        if (Environment.GetEnvironmentVariable("LF_LAYER_TIMING") is { Length: > 0 } timed && File.Exists(timed))
+            Check("layers timing: a dragged layer on a real file", () => LayersTiming(timed));
+    }
+
+    private static string LayersTiming(string file)
+    {
+        var s = App.Instance!.Settings;
+        bool wasMuted = s.PlayerMuted;
+        s.PlayerMuted = true;
+        var pw = new PlayerWindow();
+        try
+        {
+            pw.OpenFile(file, edit: true);
+            Pump(TimeSpan.FromSeconds(15), () => pw.Editor.IsActive && pw.Editor.ActualHeight > 50);
+            if (!pw.Editor.IsActive) throw new Exception("the editor did not open");
+            var ed = pw.Editor;
+            Pump(TimeSpan.FromMilliseconds(800), () => false);
+            ed.TestFormat(CanvasFormat.Vertical);
+            ed.TestDone();
+            var layer = ed.TestAddLayer() ?? throw new Exception("no layer");
+            Pump(TimeSpan.FromSeconds(3), () => !ed.TestCompositeBusy);
+            var report = new List<string>();
+            foreach (double at in new[] { 0.1, 1.0, 1.95 })
+            {
+                ed.TestSeek(at);
+                Pump(TimeSpan.FromMilliseconds(900), () => false);
+                var times = new List<double>();
+                for (int i = 0; i < 12; i++)
+                {
+                    var sw = Stopwatch.StartNew();
+                    ed.TestPan(layer, 0.5 + 0.02 * (i % 5), 0.5);
+                    Pump(TimeSpan.FromSeconds(3), () => !ed.TestCompositeBusy);
+                    times.Add(sw.Elapsed.TotalMilliseconds);
+                }
+                times.Sort();
+                report.Add($"at {at:0.00} s: median {times[times.Count / 2]:0} ms, slowest {times[^1]:0} ms");
+            }
+            // while playing
+            ed.TestSeek(0.2);
+            double from = ed.Position;
+            ed.TogglePlay();
+            var clock = Stopwatch.StartNew();
+            Pump(TimeSpan.FromMilliseconds(2000), () => false);
+            double played = ed.Position - from, wall = clock.Elapsed.TotalSeconds;
+            ed.TogglePlay();
+            ed.TestDiscard();
+            Pump(TimeSpan.FromSeconds(2), () => !pw.Editor.IsActive);
+            return string.Join("; ", report) + $"; plays {played:0.00} s in {wall:0.00} s";
+        }
+        finally
+        {
+            if (pw.Editor.IsActive) pw.Editor.TestDiscard();
+            pw.Close();
+            s.PlayerMuted = wasMuted;
+            s.Save();
+        }
+    }
+
+    /// <summary>
+    /// The real player and editor with the layer test clip. What the player shows is read from the player itself (its
+    /// filtered picture written to a file) - never from the screen, so this also runs out of sight.
+    /// </summary>
+    private static string LayersLive(string dir, string banner)
+    {
+        var s = App.Instance!.Settings;
+        bool wasMuted = s.PlayerMuted;
+        string? oldBanner = s.BannerPath;
+        s.PlayerMuted = true;
+        var (_, _, src) = StreamEdit(dir);
+        string shotFile = Path.Combine(dir, "layers-live.png");
+        var pw = new PlayerWindow();
+        string Seen()
+        {
+            try
+            {
+                if (File.Exists(shotFile)) File.Delete(shotFile);
+                if (!pw.TestFrame(shotFile) || !File.Exists(shotFile)) return "no picture";
+                var f = ImageIO.LoadFull(shotFile);
+                return f == null ? "unreadable" : $"{HueAt(f, 0.25, 0.25)} {HueAt(f, 0.75, 0.25)} / {HueAt(f, 0.25, 0.75)} {HueAt(f, 0.75, 0.75)} ({f.PixelWidth}x{f.PixelHeight})";
+            }
+            catch (Exception ex) { return ex.Message; }
+        }
+        string Until(string want, string what, int seconds = 6)
+        {
+            string seen = "";
+            var sw = Stopwatch.StartNew();
+            Pump(TimeSpan.FromSeconds(seconds), () =>
+            {
+                Pump(TimeSpan.FromMilliseconds(120), () => false);
+                seen = Seen();
+                return seen.StartsWith(want, StringComparison.Ordinal);
+            });
+            if (!seen.StartsWith(want, StringComparison.Ordinal)) throw new Exception($"{what}: the player shows {seen}, expected {want}");
+            return $"{sw.ElapsedMilliseconds} ms";
+        }
+        try
+        {
+            pw.OpenFile(src, edit: true);
+            Pump(TimeSpan.FromSeconds(12), () => pw.Editor.IsActive && pw.Editor.ActualHeight > 50);
+            if (!pw.Editor.IsActive) throw new Exception("the editor did not open");
+            var ed = pw.Editor;
+            Pump(TimeSpan.FromMilliseconds(600), () => false);
+            ed.TestSeek(1);
+            ed.TestFormat(CanvasFormat.Vertical);
+            ed.TestDone();
+            if (ed.TestComposite != null) throw new Exception("a plain video already goes through the layer filter");
+            var layer = ed.TestAddLayer() ?? throw new Exception("no layer was added");
+            if (ed.TestComposite == null) throw new Exception("a layer was added and the player was not asked for the layered picture");
+            var p = ed.Project;
+            var (cw, ch) = p.CanvasSize();
+            // two halves, each filled with the video's middle: blue | magenta twice
+            string halves = Until("blue magenta / blue magenta", "two halves");
+            // the camera box into the upper half: the same numbers as StreamEdit, through the editor's own zoom and pan
+            double half = ch / 2.0, k = half / 180, fit = Math.Min(cw / 1280.0, half / 720.0);
+            ed.TestZoom(layer, k / fit);
+            ed.TestPan(layer, 0.5 + (640 - 200) * k / cw, 0.5 + (360 - 130) * k / half);
+            string zoomed = Until("green yellow / blue magenta", "the camera in the upper half");
+            // a drag: the editor draws the layers itself, at once, from the frame under the playhead - the same picture -
+            // and hands back to the player when the hand lets go
+            Pump(TimeSpan.FromSeconds(4), () => ed.TestStillReady);
+            if (!ed.TestStillReady) throw new Exception("the frame for drawing a dragged layer was never fetched");
+            if (ed.TestStillShown) throw new Exception("the editor draws the layers itself while nothing is dragged");
+            double restX = layer.CX, restY = layer.CY;
+            ed.TestDrag(layer, restX + 0.4, restY, final: false);
+            if (!ed.TestStillShown) throw new Exception("a dragged layer is not drawn at once");
+            ed.TestDrag(layer, restX, restY, final: false);
+            var own = ed.TestLayerPicture() ?? throw new Exception("nothing drawn by the editor");
+            string ownSeen = $"{HueAt(own, 0.25, 0.25)} {HueAt(own, 0.75, 0.25)} / {HueAt(own, 0.25, 0.75)} {HueAt(own, 0.75, 0.75)}";
+            Save(own, Path.Combine(dir, "layers-live-drag.png"));
+            if (ownSeen != "green yellow / blue magenta") throw new Exception("the layers as the editor draws them during a drag: " + ownSeen);
+            ed.TestDrag(layer, restX, restY, final: true);
+            Pump(TimeSpan.FromSeconds(3), () => !ed.TestStillShown);
+            if (ed.TestStillShown) throw new Exception("the editor's own drawing stays on top after the drag");
+            // a drag that ends where it began asks the player for nothing new - the editor's drawing must go all the same
+            Pump(TimeSpan.FromMilliseconds(600), () => false);
+            ed.TestDrag(layer, restX, restY, final: false);
+            ed.TestDrag(layer, restX, restY, final: true);
+            Pump(TimeSpan.FromSeconds(2), () => !ed.TestStillShown);
+            if (ed.TestStillShown) throw new Exception("after a drag that changed nothing the editor's own drawing stays on top");
+            Until("green yellow / blue magenta", "after the drag");
+
+            // the mouse itself, on the layer over the picture: the frame's handles, its move knob, dragging inside, the wheel
+            var hand = ed.TestCanvas ?? throw new Exception("no layer over the picture");
+            ed.TestSelect(layer);
+            var fr = hand.TestFrameOf(layer);
+            var area = hand.Canvas;
+            if (Math.Abs(fr.Height - area.Height / 2) > 1 || Math.Abs(fr.Width - area.Width) > 1) throw new Exception($"the layer's frame on screen is {fr}, the picture {area}");
+            var videoBefore = EditProject.VideoRect(p.Clips[0], layer, cw, ch);
+            var lowerEdge = new Point(fr.X + fr.Width / 2, fr.Bottom);
+            if (!hand.PressAt(lowerEdge)) throw new Exception("the handle on the frame's lower edge does not take the mouse");
+            hand.MoveTo(new Point(lowerEdge.X, lowerEdge.Y - fr.Height * 0.4));
+            Near(layer.FH, 0.3, "the frame's lower edge follows the mouse", 0.004);
+            var videoDuring = EditProject.VideoRect(p.Clips[0], layer, cw, ch);
+            Near(videoDuring.X, videoBefore.X, "the video stays put while its frame changes (x)", 0.05);
+            Near(videoDuring.Y, videoBefore.Y, "the video stays put while its frame changes (y)", 0.05);
+            hand.MoveTo(new Point(lowerEdge.X, lowerEdge.Y - 4));
+            Near(layer.FH, 0.5, "the edge catches on the picture's middle", 1e-9);
+            hand.Release();
+            var knob = EditCanvasLayer.TestMoveKnob(fr);
+            if (!hand.PressAt(knob)) throw new Exception("the move knob does not take the mouse");
+            hand.MoveTo(new Point(knob.X, knob.Y + area.Height * 0.25));
+            Near(layer.FY, 0.25, "the whole layer follows the move knob", 0.004);
+            Near(layer.FH, 0.5, "moving a layer leaves its size alone", 1e-9);
+            hand.MoveTo(new Point(knob.X, knob.Y + 3));
+            Near(layer.FY, 0, "a moved layer catches on the picture's edge", 1e-9);
+            hand.Release();
+            double panFrom = layer.CX;
+            var inside = new Point(fr.X + fr.Width * 0.3, fr.Y + fr.Height * 0.7);
+            if (!hand.PressAt(inside)) throw new Exception("a press inside the layer is not taken");
+            hand.MoveTo(new Point(inside.X + 40, inside.Y));
+            Near(layer.CX, panFrom + 40 / fr.Width, "dragging inside moves the video in its frame", 0.002);
+            hand.MoveTo(inside);
+            hand.Release();
+            Near(layer.CX, panFrom, "dragged back", 0.002);
+            // the wheel: zooms in at the cursor - what is under it stays under it
+            var wheelAt = new Point(fr.X + fr.Width * 0.25, fr.Y + fr.Height * 0.5);
+            double wx = (wheelAt.X - area.X) / area.Width * cw, wy = (wheelAt.Y - area.Y) / area.Height * ch;
+            Point Under()
+            {
+                var v = EditProject.VideoRect(p.Clips[0], layer, cw, ch);
+                return new Point((wx - v.X) / v.Width, (wy - v.Y) / v.Height);
+            }
+            var under0 = Under();
+            double zoom0 = layer.Scale;
+            if (!hand.WheelAt(wheelAt, 360)) throw new Exception("the wheel over a layer does nothing");
+            if (layer.Scale <= zoom0 * 1.2) throw new Exception($"three notches of the wheel zoomed from {zoom0:0.00} to {layer.Scale:0.00}");
+            var under1 = Under();
+            Near(under1.X, under0.X, "the wheel zooms at the cursor (x)", 0.002);
+            Near(under1.Y, under0.Y, "the wheel zooms at the cursor (y)", 0.002);
+            hand.WheelAt(wheelAt, -360);
+            Near(layer.Scale, zoom0, "wheeled back", 0.01);
+            // a click on the video itself, under the layer: it is picked up (Format tool) like any layer
+            var below = new Point(area.X + area.Width / 2, area.Y + area.Height * 0.75);
+            if (!hand.PressAt(below)) throw new Exception("a press on the video under the layer is not taken");
+            hand.Release();
+            if (!ed.TestFormatOpen) throw new Exception("a click on the video itself did not pick it up");
+            ed.TestDone();
+            Until("green yellow / blue magenta", "after the mouse");
+            // the wheel at the cursor: the point of the video under it stays put
+            var cut0 = EditProject.Cut(p.Clips[0], layer, cw, ch)!.Value;
+            ed.TestZoom(layer, layer.Scale * 1.5, new Point(0.5, 0.25));
+            var cut1 = EditProject.Cut(p.Clips[0], layer, cw, ch)!.Value;
+            Near(cut1.Source.X + cut1.Source.Width / 2, cut0.Source.X + cut0.Source.Width / 2, "zooming at the frame's middle keeps its middle", 0.8);
+            ed.TestZoom(layer, k / fit, new Point(0.5, 0.25));
+            ed.TestSelect(layer);
+            ed.TestFlip();
+            string mirrored = Until("yellow green / blue magenta", "the layer mirrored");
+            ed.TestFlip();
+            Until("green yellow / blue magenta", "mirrored back");
+            // dragging the frame's lower edge up: the video stays where it is, the freed strip shows the canvas behind
+            ed.TestFrame(layer, new Rect(0, 0, 1, 0.3), moved: false);
+            Pump(TimeSpan.FromMilliseconds(700), () => false);
+            Until("green yellow", "the frame made lower");
+            var lower = ImageIO.LoadFull(shotFile)!;
+            string strip = $"{HueAt(lower, 0.25, 0.4)} {HueAt(lower, 0.75, 0.4)}";
+            if (strip.Contains("green") || strip.Contains("yellow")) throw new Exception($"under the smaller frame the layer still shows: {strip}");
+            ed.TestFrame(layer, new Rect(0, 0, 1, 0.5), moved: false);
+            // playing with the filter on: time moves and the picture stays right
+            ed.TestSeek(0.2);
+            double from = ed.Position;
+            ed.TogglePlay();
+            Pump(TimeSpan.FromMilliseconds(1200), () => false);
+            double moved = ed.Position - from;
+            string playing = Seen();
+            ed.TogglePlay();
+            if (moved < 0.5) throw new Exception($"the preview stands still while playing with layers ({moved:0.00} s in 1.2 s)");
+            if (!playing.StartsWith("green yellow / blue magenta", StringComparison.Ordinal)) throw new Exception("while playing: " + playing);
+            // a picture, a second one of it, mirrored
+            var px = new PixelBuffer(64, 64);
+            for (int i = 0; i < px.Data.Length; i += 4) { px.Data[i + 2] = 255; px.Data[i + 3] = 255; }
+            string png = Path.Combine(dir, "layers-live-sticker.png");
+            File.WriteAllBytes(png, ImageIO.EncodePng(px.ToBitmap()));
+            var im = ed.TestAddImage(png) ?? throw new Exception("the picture was not added");
+            var twin = ed.TestDuplicate() as ImageOverlay ?? throw new Exception("the picture was not duplicated");
+            if (twin.Id == im.Id || p.Overlays.OfType<ImageOverlay>().Count() != 2 || twin.X <= im.X) throw new Exception("the duplicate is not a second picture beside the first");
+            ed.TestFlip();
+            if (!twin.Flip || im.Flip) throw new Exception("mirror did not go to the picked-up picture alone");
+            // a word of a caption in its own colour, through the caption tool
+            ed.TestAddText("czerwony napis");
+            var text = p.Overlays.OfType<TextOverlay>().Single();
+            ed.TestSelect(text);
+            ed.TestColor(Color.FromRgb(255, 0, 0), 0, 8);
+            if (text.Spans.Count != 1 || text.Spans[0].Start != 0 || text.Spans[0].Length != 8) throw new Exception("the selected word did not take the colour");
+            if (text.Color != Colors.White) throw new Exception("the whole caption changed colour");
+            ed.TestDone();
+            // the banner: its picture is a window of its own, and it is the top layer - right above the window that
+            // draws the captions and pictures
+            string bannerNote = "no test banner";
+            if (File.Exists(banner))
+            {
+                s.BannerPath = banner;
+                ed.TestSeek(0.3);
+                var adding = ed.TestAddBanner();
+                Pump(TimeSpan.FromSeconds(12), () => adding.IsCompleted);
+                var bo = ed.Project.Overlays.OfType<BannerOverlay>().SingleOrDefault() ?? throw new Exception("the banner was not added");
+                var (b0, _) = ed.Project.BannerSpan(bo);
+                ed.TestSeek(b0 + 1.2);
+                Pump(TimeSpan.FromSeconds(6), () => ed.TestBannerShown);
+                if (!ed.TestBannerShown) throw new Exception("the banner's picture never came up");
+                var (bannerWindow, layerWindow) = ed.TestWindows;
+                bool above = false;
+                var w = bannerWindow;
+                for (int i = 0; i < 400 && w != IntPtr.Zero && !above; i++)
+                {
+                    w = GetWindow(w, 2);
+                    above = w == layerWindow;
+                }
+                if (!above) throw new Exception("the banner's picture is not above the captions and pictures");
+                bannerNote = "banner above captions";
+                ed.TestSeek(0.3);
+            }
+            // the layer gone: the plain video again, the frame its own
+            ed.TestSelect(layer);
+            ed.TestDelete();
+            if (ed.Project.Overlays.OfType<VideoLayer>().Any() || !ed.Project.Canvas.WholeFrame) throw new Exception("the layer is gone but the video did not get the frame back");
+            if (ed.TestComposite != null) throw new Exception("no layer left and the player still filters the picture");
+            ed.TestDiscard();
+            Pump(TimeSpan.FromSeconds(2), () => !pw.Editor.IsActive);
+            return $"halves after {halves}, camera zoomed in after {zoomed}, mirrored after {mirrored}; plays {moved:0.00} s in 1.2 s; picture ×2, a red word; {bannerNote}";
+        }
+        finally
+        {
+            // a failed run leaves an edit with changes: closing it would ask "discard?" and wait for an answer
+            if (pw.Editor.IsActive) pw.Editor.TestDiscard();
+            pw.Close();
+            s.PlayerMuted = wasMuted;
+            s.BannerPath = oldBanner;
+            s.Save();
+        }
+    }
+
+    // ------------------------------------------------------------------ video layers, pictures, coloured words, own fonts
+
+    /// <summary>What colour a pixel of the layer test clip is (its areas are green, yellow, blue and magenta; black is the canvas).</summary>
+    private static string Hue(Color c) =>
+        c.R < 56 && c.G < 56 && c.B < 56 ? "black" :
+        c.G > 140 && c.R < 110 && c.B < 110 ? "green" :
+        c.R > 150 && c.G > 150 && c.B < 120 ? "yellow" :
+        c.B > 130 && c.R < 100 && c.G < 125 ? "blue" :
+        c.R > 130 && c.B > 130 && c.G < 110 ? "magenta" : $"?({c.R},{c.G},{c.B})";
+
+    private static string HueAt(BitmapSource frame, double fx, double fy)
+    {
+        var pb = PixelBuffer.FromBitmap(frame);
+        return Hue(pb.GetPixel(Math.Clamp((int)(pb.Width * fx), 0, pb.Width - 1), Math.Clamp((int)(pb.Height * fy), 0, pb.Height - 1)));
+    }
+
+    /// <summary>
+    /// A 1280×720 "stream": the game is blue on the left and magenta on the right, the camera is a 320×180 box at 40,40
+    /// (green left half, yellow right half) - and the edit that makes a 9:16 clip of it: the camera filling the upper
+    /// half, the game the lower one.
+    /// </summary>
+    private static (EditProject P, VideoLayer Layer, string Source) StreamEdit(string dir)
+    {
+        string src = Path.Combine(dir, "layers-src.mp4");
+        if (!File.Exists(src))
+            RunFfmpeg("-y -f lavfi -i \"color=c=0x2040C0:s=1280x720:r=30:d=2,drawbox=x=640:y=0:w=640:h=720:color=0xC020C0:t=fill," +
+                      "drawbox=x=40:y=40:w=160:h=180:color=0x20C020:t=fill,drawbox=x=200:y=40:w=160:h=180:color=0xE0E020:t=fill\" " +
+                      $"-c:v libx264 -g 15 -pix_fmt yuv420p \"{src}\"");
+        var clip = ClipProbe.ProbeAsync(src).GetAwaiter().GetResult() ?? throw new Exception("the test clip can't be read");
+        var p = new EditProject(clip);
+        p.Canvas.Format = CanvasFormat.Vertical;
+        p.Canvas.Background = CanvasBackground.Black;
+        var (cw, ch) = p.CanvasSize();
+        var layer = p.AddLayer();
+        // the camera box fills the upper half's height; its middle (200,130 in the clip) is the half's middle
+        double half = ch / 2.0, k = half / 180, fit = Math.Min(cw / 1280.0, half / 720.0);
+        layer.Scale = k / fit;
+        layer.CX = 0.5 + (640 - 200) * k / cw;
+        layer.CY = 0.5 + (360 - 130) * k / half;
+        p.Changed();
+        return (p, layer, src);
+    }
+
+    private static void LayerChecks(string dir, string mp4, string banner, Func<BannerInfo?> analysed)
+    {
+        // the test banner (a red box on a transparent canvas), analysed once
+        BannerInfo Banner() => analysed() ?? Task.Run(() => Banners.AnalyzeAsync(banner)).GetAwaiter().GetResult() ?? throw new Exception("the test banner can't be read");
+
+        Check("layers: the time line's lanes are the stack on the video - the banner on top, a bar dragged up or down changes the order", () =>
+        {
+            var clip = new EditClip { Path = "sample.mp4", Duration = 20, Width = 1920, Height = 1080, Fps = 30 };
+            var p = new EditProject(clip);
+            p.Canvas.Format = CanvasFormat.Vertical;
+            // added in this order: a caption, a layer of the video, the banner, a picture, another caption, another layer
+            var a = new TextOverlay { Text = "A", Start = 0, End = 20, Size = 0.05 };
+            p.Overlays.Add(a);
+            var v1 = p.AddLayer();
+            var b = new BannerOverlay { Asset = Banner(), At = 10, Size = 0.9 };
+            p.Overlays.Add(b);
+            var pic = new ImageOverlay { Path = Path.Combine(dir, "no-such-picture.png"), Width = 200, Height = 100, Start = 2, End = 16, Size = 0.2 };
+            p.Overlays.Add(pic);
+            var c = new TextOverlay { Text = "C", Start = 6, End = 14, Size = 0.05 };
+            p.Overlays.Add(c);
+            var v2 = p.AddLayer();
+            p.Changed();
+            var vid = new VideoEditor();
+            vid.TestStatic(p, null, false, 1);
+            vid.Measure(new Size(960, double.PositiveInfinity));
+            vid.Arrange(new Rect(0, 0, 960, vid.DesiredSize.Height));
+            vid.UpdateLayout();
+            var tl = vid.Timeline;
+            var names = new (string Name, EditOverlay O)[] { ("banner", b), ("C", c), ("picture", pic), ("A", a), ("layer2", v2), ("layer1", v1) };
+            string Lanes() => string.Join(" ", names.OrderBy(x => tl.LaneOf(x.O)).Select(x => $"{x.Name}:{tl.LaneOf(x.O)}"));
+            string start = Lanes();
+            if (tl.LaneOf(b) != 0) throw new Exception("the banner is not in the top lane: " + start);
+            if (!(tl.LaneOf(c) < tl.LaneOf(pic) && tl.LaneOf(pic) < tl.LaneOf(a))) throw new Exception("captions and pictures are not stacked newest in front: " + start);
+            if (!(tl.LaneOf(a) < tl.LaneOf(v2) && tl.LaneOf(v2) < tl.LaneOf(v1))) throw new Exception("the layers of the video are not under everything else: " + start);
+            if (start != "banner:0 C:1 picture:2 A:3 layer2:4 layer1:5") throw new Exception("lanes: " + start);
+            void Pull(EditOverlay item, EditOverlay onto)
+            {
+                var from = tl.BarOf(item);
+                var to = tl.BarOf(onto);
+                var grab = new Point(from.X + from.Width / 2, from.Y + from.Height / 2);
+                var drop = new Point(grab.X, to.Y + to.Height / 2);
+                tl.PressAt(grab);
+                tl.MoveTo(new Point(grab.X, (grab.Y + drop.Y) / 2));
+                tl.MoveTo(drop);
+                tl.ReleaseAt(drop);
+            }
+            // the picture's bar pulled straight up onto the caption above it: the picture is in front now, its time as it was
+            Pull(pic, c);
+            if (!(tl.LaneOf(pic) < tl.LaneOf(c)) || p.Overlays.IndexOf(pic) < p.Overlays.IndexOf(c)) throw new Exception("the picture pulled up is not in front of the caption: " + Lanes());
+            if (pic.Start != 2 || pic.End != 16) throw new Exception($"pulling a bar up changed its time: {pic.Start}-{pic.End}");
+            if (tl.LaneOf(b) != 0) throw new Exception("the banner is no longer on top: " + Lanes());
+            // the lower layer of the video pulled up onto the upper one: it is the one in front now - in the file too
+            Pull(v1, v2);
+            if (!(tl.LaneOf(v1) < tl.LaneOf(v2))) throw new Exception("the video layer pulled up is not in front: " + Lanes());
+            var parts = EditGraph.PartsFor(p, 0, 1, 30);
+            if (parts.Count != 3 || !ReferenceEquals(parts[1].Layer, v2) || !ReferenceEquals(parts[2].Layer, v1)) throw new Exception("the file still has the layers in the old order");
+            // a caption pulled all the way down: behind the other captions and pictures, but never under a layer of the video
+            Pull(c, v2);
+            if (!(tl.LaneOf(c) > tl.LaneOf(a) && tl.LaneOf(c) < tl.LaneOf(v1) && tl.LaneOf(c) < tl.LaneOf(v2))) throw new Exception("the caption pulled down: " + Lanes());
+            // the banner stays on top whatever is done to its bar
+            Pull(b, a);
+            if (tl.LaneOf(b) != 0) throw new Exception("the banner was pulled off the top: " + Lanes());
+            string end = Lanes();
+            // each pull is one step back
+            vid.TestUndo();
+            var back = vid.Project;
+            int Index(EditOverlay o) => back.Overlays.FindIndex(x => x.Id == o.Id);
+            if (!(Index(c) > Index(a))) throw new Exception("undo did not put the caption back in front");
+            if (!(Index(v1) > Index(v2))) throw new Exception("undo took back more than the last pull");
+            return $"{start}  →  {end}";
+        });
+
+        Check("edit: the banner lies on top of a picture put in its place", () =>
+        {
+            var white = new PixelBuffer(64, 64);
+            Array.Fill(white.Data, (byte)255);
+            string png = Path.Combine(dir, "white.png");
+            File.WriteAllBytes(png, ImageIO.EncodePng(white.ToBitmap()));
+            var clip = ClipProbe.ProbeAsync(mp4).GetAwaiter().GetResult()!;
+            var p = new EditProject(clip);
+            p.Split(6);
+            p.Delete(1);
+            var bo = new BannerOverlay { Asset = Banner(), At = 2, X = 0.5, Y = 0.66, Size = 0.6 };
+            // the picture is added after the banner, right where the banner is - and still lies under it
+            var pic = new ImageOverlay { Path = png, Width = 64, Height = 64, Start = 0, End = 6, X = 0.5, Y = 0.66, Size = 0.3 };
+            p.Overlays.Add(bo);
+            p.Overlays.Add(pic);
+            p.Changed();
+            var output = Path.Combine(dir, "banner-on-top.mp4");
+            if (File.Exists(output)) File.Delete(output);
+            var (ok, err) = Wait(EditExport.SaveAsync(p, output, null, true, null, CancellationToken.None), 120);
+            if (!ok) throw new Exception(err);
+            var hold = p.Holds.Single();
+            double hf = p.EToF(hold.E);
+            Color At(double t)
+            {
+                var pb = PixelBuffer.FromBitmap(FrameAt(output, t, 360));
+                return pb.GetPixel(pb.Width / 2, (int)(pb.Height * 0.66));
+            }
+            var before = At(0.4);
+            var during = At(hf + 1);
+            if (before.R < 215 || before.G < 215 || before.B < 215) throw new Exception($"before the banner the picture should show ({before})");
+            if (during.R < 180 || during.G > 90 || during.B > 90) throw new Exception($"with the banner on, its red should cover the picture ({during})");
+            return $"picture alone {before}, under the banner {during}";
+        });
+
+        // developer probe: one filter graph through the windowless player (LF_PROBE_GRAPH, LF_PROBE_SIZE=WxH)
+        if (Environment.GetEnvironmentVariable("LF_PROBE_GRAPH") is { Length: > 0 } probe)
+            Check("probe: a filter graph in the player", () =>
+            {
+                var size = (Environment.GetEnvironmentVariable("LF_PROBE_SIZE") ?? "1280x720").Split('x');
+                return MpvComposite(StreamEdit(dir).Source, probe, int.Parse(size[0]), int.Parse(size[1]));
+            });
+
+        Check("layers: a second layer of the video shares the frame - halves, each filled, zoomed far enough for a small camera picture", () =>
+        {
+            var clip = new EditClip { Path = "stream.mp4", Duration = 10, Width = 1920, Height = 1080, Fps = 60 };
+            var p = new EditProject(clip);
+            p.Canvas.Format = CanvasFormat.Vertical;
+            var (cw, ch) = p.CanvasSize();
+            if (cw != 1080 || ch != 1920) throw new Exception($"canvas {cw}x{ch}");
+            if (p.IsComposite) throw new Exception("a plain video already counts as layered");
+            var layer = p.AddLayer();
+            if (!p.IsComposite) throw new Exception("a layer was added and the picture is still the plain video");
+            if (layer.FY != 0 || layer.FH != 0.5 || layer.FW != 1 || p.Canvas.FY != 0.5 || p.Canvas.FH != 0.5) throw new Exception("not two halves, one above the other");
+            var top = EditProject.Cut(clip, layer, cw, ch) ?? throw new Exception("the layer shows nothing");
+            var bottom = EditProject.Cut(clip, p.Canvas, cw, ch) ?? throw new Exception("the video shows nothing");
+            if (top.Target != new Rect(0, 0, 1080, 960) || bottom.Target != new Rect(0, 960, 1080, 960)) throw new Exception($"halves not filled: {top.Target} / {bottom.Target}");
+            // a camera of 384x216 px at 60,60 of the stream, to fill the upper half's height
+            double k = 960.0 / 216, fit = Math.Min(1080.0 / 1920, 960.0 / 1080);
+            layer.Scale = k / fit;
+            if (layer.Scale > EditProject.MaxZoom) throw new Exception($"zoom {layer.Scale:0.0} is more than the editor allows ({EditProject.MaxZoom})");
+            layer.CX = 0.5 + (960 - 252) * k / 1080;
+            layer.CY = 0.5 + (540 - 168) * k / 960;
+            double cx = layer.CX, cy = layer.CY;
+            EditProject.KeepInFrame(clip, layer, cw, ch);
+            if (Math.Abs(layer.CX - cx) > 1e-9 || Math.Abs(layer.CY - cy) > 1e-9) throw new Exception("the video can't be pushed far enough to show its corner");
+            var cut = EditProject.Cut(clip, layer, cw, ch)!.Value;
+            Near(cut.Source.Y, 60, "top of what is shown", 0.6);
+            Near(cut.Source.Height, 216, "height of what is shown", 0.6);
+            Near(cut.Source.X + cut.Source.Width / 2, 252, "middle of what is shown", 0.6);
+            var placed = EditGraph.Place(clip, layer, cw, ch) ?? throw new Exception("no pixels for the layer");
+            if (placed.W != 1080 || placed.H != 960 || placed.CropW > 300 || placed.CropH > 230) throw new Exception($"cut {placed.CropW}x{placed.CropH} -> {placed.W}x{placed.H}");
+            // mirrored: the same part of the picture, turned over where it is
+            layer.Flip = true;
+            layer.CX = 1 - layer.CX;
+            var mirrored = EditProject.Cut(clip, layer, cw, ch)!.Value;
+            Near(mirrored.Source.X, cut.Source.X, "mirrored: left edge of what is shown", 0.6);
+            if (!mirrored.Flip) throw new Exception("not mirrored");
+            // an edge of the frame dragged: the video stays where it is on the canvas
+            var before = EditProject.VideoRect(clip, layer, cw, ch);
+            EditProject.SetFrame(clip, layer, new Rect(0, 0, 1, 0.4), cw, ch);
+            var after = EditProject.VideoRect(clip, layer, cw, ch);
+            Near(after.X, before.X, "video x after the frame changed", 0.01);
+            Near(after.Y, before.Y, "video y after the frame changed", 0.01);
+            Near(after.Width, before.Width, "video width after the frame changed", 0.01);
+            // the last layer goes: the video has the canvas to itself again, as it was
+            p.Remove(layer);
+            if (!p.Canvas.WholeFrame || Math.Abs(p.Canvas.Scale - 1) > 1e-9 || p.IsComposite) throw new Exception("the video did not get the canvas back");
+            // a layer added on the wide original (halves side by side), then 9:16 chosen: the halves go one above the other
+            var wide = new EditProject(clip);
+            var side = wide.AddLayer();
+            if (side.FW != 0.5 || side.FH != 1 || wide.Canvas.FX != 0.5) throw new Exception("on a wide canvas the halves are not side by side");
+            wide.Canvas.Format = CanvasFormat.Vertical;
+            wide.Reframe();
+            if (side.FW != 1 || side.FH != 0.5 || wide.Canvas.FY != 0.5 || wide.Canvas.FX != 0) throw new Exception("the halves did not follow the canvas to 9:16");
+            var (ww, wh) = wide.CanvasSize();
+            if (EditProject.Cut(clip, side, ww, wh)!.Value.Target != new Rect(0, 0, ww, wh / 2.0)) throw new Exception("after the new shape the upper half is not filled");
+            // a frame set by hand keeps its part of the canvas
+            side.FH = 0.3;
+            wide.Canvas.Format = CanvasFormat.Square;
+            wide.Reframe();
+            if (side.FH != 0.3 || side.FW != 1) throw new Exception("a frame set by hand was rearranged");
+            return $"camera 384x216 at zoom {k / fit:0.0} (limit {EditProject.MaxZoom}): {placed.CropW}x{placed.CropH} px cut out, scaled to {placed.ScaleW}x{placed.ScaleH}";
+        });
+
+        Check("layers: the finished video has each layer's part of the picture where it was put, only while it is there, mirrored when asked", () =>
+        {
+            var (p, layer, src) = StreamEdit(dir);
+            layer.Start = 0.5;
+            layer.End = 1.5;
+            p.Changed();
+            var output = Path.Combine(dir, "layers-out.mp4");
+            if (File.Exists(output)) File.Delete(output);
+            var sw = Stopwatch.StartNew();
+            var (ok, err) = Wait(EditExport.SaveAsync(p, output, null, true, null, CancellationToken.None), 120);
+            long ms = sw.ElapsedMilliseconds;
+            if (!ok) throw new Exception(err);
+            if (!ProbeStreams(output).Contains("720|1280")) throw new Exception(ProbeStreams(output));
+            Near(ProbeDuration(output), 2, "length", 0.08);
+            var mid = FrameAt(output, 1.0, 640);
+            string seen = $"{HueAt(mid, 0.25, 0.25)} {HueAt(mid, 0.75, 0.25)} / {HueAt(mid, 0.25, 0.75)} {HueAt(mid, 0.75, 0.75)}";
+            if (seen != "green yellow / blue magenta") throw new Exception("with the layer on: " + seen);
+            foreach (double t in new[] { 0.2, 1.8 })
+            {
+                var f = FrameAt(output, t, 640);
+                string s = $"{HueAt(f, 0.25, 0.25)} {HueAt(f, 0.75, 0.25)} / {HueAt(f, 0.25, 0.75)} {HueAt(f, 0.75, 0.75)}";
+                if (s != "black black / blue magenta") throw new Exception($"at {t} s (the layer is not there): {s}");
+            }
+            Save(mid, Path.Combine(dir, "layers-out.png"));
+            // both mirrored
+            layer.Start = 0;
+            layer.End = 2;
+            layer.Flip = true;
+            layer.CX = 1 - layer.CX;
+            p.Canvas.Flip = true;
+            p.Canvas.CX = 1 - p.Canvas.CX;
+            p.Changed();
+            var flipped = Path.Combine(dir, "layers-out-mirrored.mp4");
+            if (File.Exists(flipped)) File.Delete(flipped);
+            (ok, err) = Wait(EditExport.SaveAsync(p, flipped, null, true, null, CancellationToken.None), 120);
+            if (!ok) throw new Exception(err);
+            var m = FrameAt(flipped, 1.0, 640);
+            string mirroredSeen = $"{HueAt(m, 0.25, 0.25)} {HueAt(m, 0.75, 0.25)} / {HueAt(m, 0.25, 0.75)} {HueAt(m, 0.75, 0.75)}";
+            if (mirroredSeen != "yellow green / magenta blue") throw new Exception("mirrored: " + mirroredSeen);
+            return $"{seen}; without the layer black above; mirrored {mirroredSeen}; rendered in {ms} ms";
+        });
+
+        Check("layers: the player's preview filter draws the same picture as the file - and the player takes it", () =>
+        {
+            var (p, layer, src) = StreamEdit(dir);
+            var clip = p.Clips[0];
+            string graph = EditGraph.Preview(p, clip, 360, 640, 0);
+            string png = Path.Combine(dir, "layers-preview.png");
+            if (File.Exists(png)) File.Delete(png);
+            RunFfmpeg($"-y -ss 1 -i \"{src}\" -vf \"{graph.Replace("\n", "")}\" -frames:v 1 \"{png}\"");
+            var shot = ImageIO.LoadFull(png) ?? throw new Exception("no picture from the preview filter");
+            if (shot.PixelWidth != 360 || shot.PixelHeight != 640) throw new Exception($"preview picture {shot.PixelWidth}x{shot.PixelHeight}");
+            string seen = $"{HueAt(shot, 0.25, 0.25)} {HueAt(shot, 0.75, 0.25)} / {HueAt(shot, 0.25, 0.75)} {HueAt(shot, 0.75, 0.75)}";
+            if (seen != "green yellow / blue magenta") throw new Exception("preview: " + seen);
+            // a layer that is only there for a while switches itself on and off by the player's clock
+            layer.Start = 0.5;
+            layer.End = 1.5;
+            string timed = EditGraph.Preview(p, clip, 360, 640, 0);
+            if (!timed.Contains("enable='between(t,0.5,1.499)'")) throw new Exception("no on/off times in: " + timed.Replace("\n", " "));
+            // a phone video stored on its side is stood up by the filter itself
+            if (!EditGraph.Preview(p, clip, 360, 640, 90).StartsWith("format=yuv420p,transpose=clock[up]")) throw new Exception("a turned video is not stood up");
+            string player = MpvComposite(src, graph, 360, 640);
+            // the blurred background (a layer that does not cover its part of the canvas) goes through the player as well
+            layer.Start = 0;
+            layer.End = 2;
+            p.Canvas.Background = CanvasBackground.Blur;
+            layer.FH = 0.3;
+            p.Changed();
+            string blurred = EditGraph.Preview(p, clip, 360, 640, 0);
+            // (the player's own Gaussian blur crashes on the small copy the background is blurred from - a box blur there)
+            if (!blurred.Contains("boxblur=4:3") || blurred.Contains("gblur")) throw new Exception("the preview's blurred background: " + blurred.Replace("\n", " "));
+            MpvComposite(src, blurred, 360, 640);
+            return $"{seen} at 360x640; {player}; blurred background too";
+        });
+
+        Check("edit: a picture put on the video is in the file - where it was put, at its size, for its time, mirrored when asked", () =>
+        {
+            // 200x100: the left half red, the right half white
+            var px = new PixelBuffer(200, 100);
+            for (int y = 0; y < 100; y++)
+                for (int x = 0; x < 200; x++)
+                {
+                    int i = (y * 200 + x) * 4;
+                    px.Data[i] = px.Data[i + 1] = (byte)(x < 100 ? 0 : 255);
+                    px.Data[i + 2] = 255;
+                    px.Data[i + 3] = 255;
+                }
+            string png = Path.Combine(dir, "sticker.png");
+            File.WriteAllBytes(png, ImageIO.EncodePng(px.ToBitmap()));
+            if (EditImages.Size(png) is not (200, 100)) throw new Exception("the picture's size was not read");
+            if (EditImages.Size(mp4) != null) throw new Exception("a video passed for a picture");
+            var clip = ClipProbe.ProbeAsync(mp4).GetAwaiter().GetResult()!;
+            var p = new EditProject(clip);
+            p.Split(3);
+            p.Delete(1); // 3 s are enough
+            // a quarter of the frame's height: 180x360 px at 720p, its middle at a quarter of the width
+            var im = new ImageOverlay { Path = png, Width = 200, Height = 100, Start = 1, End = 2.5, X = 0.25, Y = 0.5, Size = 0.25 };
+            p.Overlays.Add(im);
+            p.Changed();
+            if (EditExport.CanCopy(p, null, false)) throw new Exception("an edit with a picture would be copied without it");
+            string Run(string name)
+            {
+                var output = Path.Combine(dir, name);
+                if (File.Exists(output)) File.Delete(output);
+                var (ok, err) = Wait(EditExport.SaveAsync(p, output, null, true, null, CancellationToken.None), 120);
+                if (!ok) throw new Exception(err);
+                return output;
+            }
+            // "video" = the pixel is the source video's own; else what the picture put there
+            var plainVideo = PixelBuffer.FromBitmap(FrameAt(mp4, 1.8, 360));
+            string Tone(BitmapSource f, double fx, double fy)
+            {
+                var pb = PixelBuffer.FromBitmap(f);
+                int x = (int)(pb.Width * fx), y = (int)(pb.Height * fy);
+                var c = pb.GetPixel(x, y);
+                var v = plainVideo.GetPixel(Math.Min(x, plainVideo.Width - 1), Math.Min(y, plainVideo.Height - 1));
+                if (Math.Abs(c.R - v.R) < 36 && Math.Abs(c.G - v.G) < 36 && Math.Abs(c.B - v.B) < 36) return "video";
+                return c.R > 200 && c.G < 70 && c.B < 70 ? "red" : c.R > 215 && c.G > 215 && c.B > 215 ? "white" : $"?({c.R},{c.G},{c.B})";
+            }
+            var file = Run("picture-out.mp4");
+            var on = FrameAt(file, 1.8, 360);
+            // the picture spans 0.25 ± 0.14 of the width and 0.5 ± 0.125 of the height
+            string seen = $"{Tone(on, 0.18, 0.5)} {Tone(on, 0.32, 0.5)}";
+            if (seen != "red white") throw new Exception("the picture on the video: " + seen);
+            if (Tone(on, 0.25, 0.3) != "video" || Tone(on, 0.45, 0.5) != "video") throw new Exception($"the picture is bigger than it was made ({Tone(on, 0.25, 0.3)} above it, {Tone(on, 0.45, 0.5)} beside it)");
+            double before = FrameDiff(FrameAt(file, 0.5, 360), FrameAt(mp4, 0.5, 360)), after = FrameDiff(FrameAt(file, 2.8, 360), FrameAt(mp4, 2.8, 360));
+            if (before > 4 || after > 4) throw new Exception($"the picture is there outside its time (differences {before:0.0} / {after:0.0})");
+            im.Flip = true;
+            var mirrored = FrameAt(Run("picture-out-mirrored.mp4"), 1.8, 360);
+            string seenMirrored = $"{Tone(mirrored, 0.18, 0.5)} {Tone(mirrored, 0.32, 0.5)}";
+            if (seenMirrored != "white red") throw new Exception("mirrored: " + seenMirrored);
+            Save(on, Path.Combine(dir, "picture-out.png"));
+            return $"{seen} at 1.8 s, plain video at 0.5 and 2.8 s, mirrored {seenMirrored}";
+        });
+
+        Check("captions: a selected part of the text takes its own colour and keeps it while the text around it changes", () =>
+        {
+            var red = Color.FromRgb(255, 0, 0);
+            var t = new TextOverlay { Text = "to jest test", Size = 0.05 };
+            string Coloured() => string.Concat(t.Spans.Select(s => $"[{t.Text.Substring(s.Start, s.Length)}]"));
+            void Type(string text, string want)
+            {
+                t.Spans = ColorSpans.Rebase(t.Spans, t.Text, text);
+                t.Text = text;
+                if (Coloured() != want) throw new Exception($"after \"{text}\": {Coloured()}, expected {want}");
+            }
+            t.Spans = ColorSpans.Paint(t.Spans, 3, 4, red);
+            if (Coloured() != "[jest]") throw new Exception(Coloured());
+            Type("no to jest test", "[jest]");      // typed before it
+            Type("no to jeest test", "[jeest]");    // typed into it
+            Type("no to jeest! test", "[jeest]");   // typed right after it: plain
+            Type("no to xjeest! test", "[jeest]");  // typed right before it: plain
+            Type("no to xjeest! test 😂", "[jeest]"); // an emoji put at the end
+            Type("no to x! test 😂", "");            // the word deleted
+            t.Text = "aaa bbb ccc";
+            t.Spans = ColorSpans.Paint(ColorSpans.Paint(Array.Empty<ColorSpan>(), 0, 7, red), 4, 3, Colors.Blue);
+            if (Coloured() != "[aaa ][bbb]") throw new Exception("painted over: " + Coloured());
+            // drawn: both colours are in the picture, and colouring a word moves no letter
+            var cap = new TextOverlay { Text = "RED WHITE", Size = 0.08, Style = CaptionStyle.None, Color = Colors.White };
+            var plain = Captions.Arrange(cap, 1280, 720).Bounds;
+            cap.Spans = ColorSpans.Paint(cap.Spans, 0, 3, red);
+            var tinted = Captions.Arrange(cap, 1280, 720).Bounds;
+            if (Math.Abs(plain.Width - tinted.Width) > plain.Width * 0.02) throw new Exception($"colouring a word changed the caption's width: {plain.Width:0.0} -> {tinted.Width:0.0}");
+            var pb = PixelBuffer.FromBitmap(Captions.Render(cap, 1280, 720, out _));
+            int reds = 0, whites = 0, redsRight = 0;
+            for (int y = 0; y < pb.Height; y++)
+                for (int x = 0; x < pb.Width; x++)
+                {
+                    var c = pb.GetPixel(x, y);
+                    if (c.A < 230) continue;
+                    if (c.R > 230 && c.G < 40 && c.B < 40) { reds++; if (x > pb.Width / 2) redsRight++; }
+                    else if (c.R > 230 && c.G > 230 && c.B > 230) whites++;
+                }
+            if (reds < 200 || whites < 200 || redsRight > 0) throw new Exception($"{reds} red and {whites} white pixels, {redsRight} red ones in the white word");
+            // the caption tool: a part selected - that part; nothing or everything selected - the whole caption
+            var cp = new CaptionPanel { Width = 760 };
+            cp.Measure(new Size(760, 200));
+            cp.Arrange(new Rect(0, 0, 760, cp.DesiredSize.Height));
+            cp.Show(cap);
+            (int Start, int Length) got = (-1, -1);
+            cp.ColorChosen += (_, s, l, _) => got = (s, l);
+            cp.TestColor(red, 4, 5);
+            if (got != (4, 5)) throw new Exception($"a selected word reported as {got}");
+            cp.TestColor(red, 2, 0);
+            if (got != (0, 0)) throw new Exception($"no selection reported as {got}");
+            cp.TestColor(red, 0, cap.Text.Length);
+            if (got != (0, 0)) throw new Exception($"everything selected reported as {got}");
+            return $"{reds} red + {whites} white pixels; typing before/after leaves it, typing inside grows it";
+        });
+
+        Check("captions: white, black and a wheel with every colour - the caption follows the mouse over the palette, one step to undo, colours used lately are kept", () =>
+        {
+            // the field: hue across, white at the top, the full colour in the middle, black at the bottom, greys in the strip
+            static string Rgb(Color c) => $"{c.R},{c.G},{c.B}";
+            if (Rgb(ColorField.SpectrumAt(0, 0.5)) != "255,0,0") throw new Exception("left middle of the spectrum is not red: " + Rgb(ColorField.SpectrumAt(0, 0.5)));
+            if (Rgb(ColorField.SpectrumAt(1 / 3.0, 0.5)) != "0,255,0") throw new Exception("a third across is not green: " + Rgb(ColorField.SpectrumAt(1 / 3.0, 0.5)));
+            if (Rgb(ColorField.SpectrumAt(2 / 3.0, 0.5)) != "0,0,255") throw new Exception("two thirds across is not blue: " + Rgb(ColorField.SpectrumAt(2 / 3.0, 0.5)));
+            if (Rgb(ColorField.SpectrumAt(0.4, 0)) != "255,255,255" || Rgb(ColorField.SpectrumAt(0.4, 1)) != "0,0,0") throw new Exception("the top is not white or the bottom not black");
+            if (Rgb(ColorField.GreyAt(0)) != "255,255,255" || Rgb(ColorField.GreyAt(1)) != "0,0,0" || ColorField.GreyAt(0.5).R is < 126 or > 129) throw new Exception("the strip of greys");
+            foreach (var (x, y) in new[] { (0.1, 0.2), (0.55, 0.5), (0.8, 0.85) })
+            {
+                var c = ColorField.SpectrumAt(x, y);
+                var at = ColorField.Find(c) ?? throw new Exception($"a colour of the field is not found in it ({Rgb(c)})");
+                if (Math.Abs(at.X - x) > 0.01 || Math.Abs(at.Y - y) > 0.01) throw new Exception($"{Rgb(c)} is at {x},{y} and was found at {at.X:0.000},{at.Y:0.000}");
+            }
+            // the palette as it is laid out: press, drag, let go - the colour under the mouse all the time, the last one chosen
+            // (the colours used lately go into a list of the test's own - not into anybody's settings)
+            var kept = new List<string>();
+            ColorPickerPanel.StoreOverride = kept;
+            try
+            {
+            var panel = new ColorPickerPanel();
+            panel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            panel.Arrange(new Rect(panel.DesiredSize));
+            panel.UpdateLayout();
+            var field = panel.Field;
+            if (field.ActualWidth < 200 || field.ActualHeight < 100) throw new Exception($"the colour field is {field.ActualWidth:0}x{field.ActualHeight:0}");
+            var seen = new List<(Color C, bool Final)>();
+            panel.Picked += (c, final) => seen.Add((c, final));
+            var red = field.PointOf(Color.FromRgb(255, 0, 0)) ?? throw new Exception("no place for red");
+            var blue = field.PointOf(Color.FromRgb(0, 0, 255)) ?? throw new Exception("no place for blue");
+            field.PressAt(red);
+            field.MoveTo(new Point((red.X + blue.X) / 2, red.Y));
+            field.MoveTo(blue);
+            field.ReleaseAt(blue);
+            if (seen.Count != 4 || seen.Take(3).Any(x => x.Final) || !seen[3].Final) throw new Exception($"{seen.Count} reports, final ones: {seen.Count(x => x.Final)}");
+            static bool Near(Color a, Color b) => Math.Abs(a.R - b.R) + Math.Abs(a.G - b.G) + Math.Abs(a.B - b.B) < 24;
+            if (!Near(seen[0].C, Color.FromRgb(255, 0, 0)) || !Near(seen[3].C, Color.FromRgb(0, 0, 255))) throw new Exception($"pressed on red and let go on blue: {Rgb(seen[0].C)} … {Rgb(seen[3].C)}");
+            // colours used lately: the one the palette was left on when it went away - not the ones passed or tried on
+            // the way, and not white or black, which have their own dots; newest first, each once, eight at most
+            var green = field.PointOf(Color.FromRgb(0, 255, 0)) ?? throw new Exception("no place for green");
+            field.PressAt(green);
+            field.ReleaseAt(green);
+            if (ColorPickerPanel.Recent().Count != 0) throw new Exception("a colour is kept as used while the palette is still open");
+            panel.Close();
+            var recent = ColorPickerPanel.Recent();
+            if (recent.Count != 1 || recent[0] != seen[^1].C || !Near(recent[0], Color.FromRgb(0, 255, 0))) throw new Exception($"after trying blue and leaving on green the recent colours are: {string.Join(" ", recent.Select(Rgb))}");
+            panel.Close();
+            panel.Open(recent[0]);
+            field.PressAt(new Point(4, 0));
+            field.ReleaseAt(new Point(4, 0));
+            panel.Close();
+            if (seen[^1].C != Colors.White || ColorPickerPanel.Recent().Count != 1) throw new Exception($"white from the strip of greys: {Rgb(seen[^1].C)}, kept {ColorPickerPanel.Recent().Count}");
+            kept.Clear();
+            for (int i = 0; i < 10; i++) ColorPickerPanel.Remember(Color.FromRgb((byte)(i * 20), 10, 10));
+            ColorPickerPanel.Remember(Color.FromRgb(100, 10, 10));
+            recent = ColorPickerPanel.Recent();
+            if (recent.Count != ColorPickerPanel.MaxRecent || Rgb(recent[0]) != "100,10,10" || recent.Count(c => Rgb(c) == "100,10,10") != 1) throw new Exception("recent colours: " + string.Join(" ", recent.Select(Rgb)));
+            if (kept.Count != ColorPickerPanel.MaxRecent || kept[0] != "#640A0A") throw new Exception("the recent colours as they are stored: " + string.Join(" ", kept));
+
+            // the caption tool: three dots (white, black, the wheel); a colour of your own shows in the wheel
+            var cap = new TextOverlay { Text = "RED WHITE", Size = 0.08, Style = CaptionStyle.None, Color = Colors.White, Start = 0, End = 5 };
+            var cp = new CaptionPanel { Width = 760 };
+            cp.Measure(new Size(760, 200));
+            cp.Arrange(new Rect(0, 0, 760, cp.DesiredSize.Height));
+            cp.Show(cap);
+            if (cp.TestDots != 3) throw new Exception($"{cp.TestDots} colour dots");
+            if (cp.TestOwnColorShown) throw new Exception("a white caption shows a colour of its own in the wheel");
+            var got = new List<(Color C, int Start, int Length, bool Final)>();
+            cp.ColorChosen += (c, s, l, f) => got.Add((c, s, l, f));
+            cp.TestPaletteFor(0, 3);
+            cp.TestPalettePick(Color.FromRgb(200, 30, 30), false);
+            cp.TestPalettePick(Color.FromRgb(255, 0, 0), true);
+            if (got.Count != 2 || got[0] != (Color.FromRgb(200, 30, 30), 0, 3, false) || got[1] != (Color.FromRgb(255, 0, 0), 0, 3, true)) throw new Exception("a palette pick for a selected word: " + string.Join(" / ", got));
+            if (cp.TestOwnColorShown) throw new Exception("colouring a word marked the whole caption's colour");
+            cp.TestPaletteFor(0, 0);
+            cp.TestPalettePick(Color.FromRgb(0, 200, 90), true);
+            if (got[^1] != (Color.FromRgb(0, 200, 90), 0, 0, true) || !cp.TestOwnColorShown) throw new Exception("a palette pick for the whole caption");
+            // where the palette opens: first under the dots (over the time line - the picture with the caption stays in
+            // sight), 6 px from them, and only without room there above them; centred on the dots (its 14 px margin is
+            // the room of its shadow)
+            double px = VisualTreeHelper.GetDpi(cp).DpiScaleY;
+            var places = cp.TestPalettePlaces(new Size(326, 260), new Size(84, 26));
+            if (places.Length != 2 || places.Any(at => Math.Abs(at.X + 121) > 0.01) || Math.Abs(places[0].Y - (26 - 8 * px)) > 0.01 || Math.Abs(places[1].Y - (-260 + 8 * px)) > 0.01)
+                throw new Exception("the palette's places: " + string.Join(" / ", places.Select(at => $"{at.X:0.#},{at.Y:0.#}")));
+
+            // in the editor: the caption follows every colour on the way, and the whole pick is one step back
+            var clip = new EditClip { Path = "sample.mp4", Duration = 5, Width = 1280, Height = 720, Fps = 30 };
+            var p = new EditProject(clip);
+            p.Overlays.Add(cap);
+            var vid = new VideoEditor();
+            vid.TestStatic(p, cap, false, 1);
+            vid.TestPalette(0, 3, Color.FromRgb(10, 200, 10), false);
+            if (cap.Spans.Count != 1 || cap.Spans[0].Color != Color.FromRgb(10, 200, 10)) throw new Exception("the caption does not follow the mouse over the palette");
+            vid.TestPalette(0, 3, Color.FromRgb(255, 0, 0), false);
+            vid.TestPalette(0, 3, Color.FromRgb(255, 0, 0), true);
+            if (cap.Spans.Count != 1 || cap.Spans[0].Color != Color.FromRgb(255, 0, 0) || cap.Spans[0].Length != 3 || cap.Color != Colors.White) throw new Exception("the chosen colour is not on the selected word alone");
+            // the palette opens on the colour of what is selected: the red word's red, the rest's white
+            cp.Show(cap);
+            cp.TestPaletteFor(0, 3);
+            if (cp.TestPaletteShows != Color.FromRgb(255, 0, 0)) throw new Exception($"the palette opened for the red word shows {cp.TestPaletteShows}");
+            cp.TestPaletteFor(4, 5);
+            if (cp.TestPaletteShows != Colors.White) throw new Exception($"the palette opened for the white word shows {cp.TestPaletteShows}");
+            // the colour it already has, once more: nothing to undo for it - one step back still takes the red away
+            vid.TestPalette(0, 3, Color.FromRgb(255, 0, 0), true);
+            vid.TestUndo();
+            var undone = vid.Project.Overlays.OfType<TextOverlay>().Single();
+            if (undone.Spans.Count != 0) throw new Exception("one step back did not take the whole pick away");
+            return $"red → blue in 4 reports, the last one chosen; only the colour the palette is left on is kept, {ColorPickerPanel.MaxRecent} at most; a pick is one undo step";
+            }
+            finally { ColorPickerPanel.StoreOverride = null; }
+        });
+
+        Check("captions: a font file of your own is taken in and draws the caption", () =>
+        {
+            string fonts = Environment.GetFolderPath(Environment.SpecialFolder.Fonts);
+            string? file = new[] { "impact.ttf", "georgiab.ttf", "timesbd.ttf", "arialbd.ttf", "cour.ttf" }.Select(n => Path.Combine(fonts, n)).FirstOrDefault(File.Exists);
+            if (file == null) throw new Exception("no font file on this PC to try with");
+            string folder = Path.Combine(dir, "fonts");
+            if (Directory.Exists(folder)) Directory.Delete(folder, true);
+            FontBook.FolderOverride = folder;
+            FontBook.Reset();
+            try
+            {
+                if (FontBook.Imported.Count != 0) throw new Exception("fonts in an empty folder");
+                var e = FontBook.Import(file) ?? throw new Exception("the font was not taken in");
+                if (!File.Exists(Path.Combine(folder, e.Id))) throw new Exception("no copy of the font in the app's folder");
+                if (FontBook.Import(file)?.Id != e.Id || FontBook.Imported.Count != 1) throw new Exception("the same file a second time made a second font");
+                string junk = Path.Combine(dir, "not-a-font.ttf");
+                File.WriteAllText(junk, "this is not a font");
+                if (FontBook.Import(junk) != null || FontBook.Imported.Count != 1) throw new Exception("a file that is not a font was taken in");
+                var plain = new TextOverlay { Text = "Hamburgefonstiv 123", Size = 0.06, Style = CaptionStyle.None };
+                var own = new TextOverlay { Text = plain.Text, Size = plain.Size, Style = plain.Style, Font = e.Id };
+                double a = Captions.Arrange(plain, 1280, 720).Bounds.Width, b = Captions.Arrange(own, 1280, 720).Bounds.Width;
+                if (Math.Abs(a - b) < 2) throw new Exception($"the caption is as wide with {e.Name} as with TikTok Sans ({a:0.0} px) - the font is not used");
+                if (Captions.LookKey(plain) == Captions.LookKey(own)) throw new Exception("a caption's look does not tell its font");
+                var pic = Captions.Render(own, 1280, 720, out _);
+                if (pic.PixelWidth < 100) throw new Exception("nothing drawn");
+                Save(pic, Path.Combine(dir, "caption-own-font.png"));
+                // a caption whose font file is gone falls back to TikTok Sans instead of failing
+                var lost = new TextOverlay { Text = plain.Text, Size = plain.Size, Style = plain.Style, Font = "gone.ttf" };
+                Near(Captions.Arrange(lost, 1280, 720).Bounds.Width, a, "a caption with a missing font", 0.5);
+                var cp = new CaptionPanel { Width = 760 };
+                string? picked = "-";
+                cp.FontChosen += f => picked = f;
+                cp.TestFont(e.Id);
+                if (picked != e.Id) throw new Exception($"the caption tool reported {picked}");
+                cp.TestFont(null);
+                if (picked != null) throw new Exception("back to TikTok Sans was not reported");
+                return $"{e.Name} ({e.Id}): the caption is {b:0} px wide instead of {a:0}";
+            }
+            finally
+            {
+                FontBook.FolderOverride = null;
+                FontBook.Reset();
+            }
+        });
+    }
+
+    /// <summary>
+    /// The player itself with the layer filter: it must take the filter while a file is open and hand on pictures of
+    /// the filter's size. No window and no sound.
+    /// </summary>
+    private static unsafe string MpvComposite(string file, string graph, int w, int h)
+    {
+        if (!MpvNative.TryLoad(out var err)) throw new Exception(err);
+        var ctx = MpvNative.mpv_create();
+        void Opt(string n, string v)
+        {
+            var nb = Encoding.UTF8.GetBytes(n + "\0");
+            var vb = Encoding.UTF8.GetBytes(v + "\0");
+            fixed (byte* a = nb) fixed (byte* b = vb) MpvNative.mpv_set_option_string(ctx, a, b);
+        }
+        Opt("vo", "null");
+        Opt("ao", "null");
+        Opt("idle", "yes");
+        Opt("keep-open", "yes");
+        Opt("pause", "yes");
+        Opt("hwdec", "auto-safe");
+        if (MpvNative.mpv_initialize(ctx) < 0) throw new Exception("init failed");
+        try
+        {
+            int Set(string n, string v)
+            {
+                var nb = Encoding.UTF8.GetBytes(n + "\0");
+                var vb = Encoding.UTF8.GetBytes(v + "\0");
+                fixed (byte* a = nb) fixed (byte* b = vb) return MpvNative.mpv_set_property_string(ctx, a, b);
+            }
+            long Num(string n)
+            {
+                long v = -1;
+                var nb = Encoding.UTF8.GetBytes(n + "\0");
+                fixed (byte* a = nb) MpvNative.mpv_get_property(ctx, a, MpvFormat.Int64, &v);
+                return v;
+            }
+            bool WaitFor(MpvEventId id, int ms)
+            {
+                var sw = Stopwatch.StartNew();
+                while (sw.ElapsedMilliseconds < ms)
+                {
+                    var ev = MpvNative.mpv_wait_event(ctx, 0.25);
+                    if (ev->EventId == id) return true;
+                    if (ev->EventId == MpvEventId.EndFile) throw new Exception("the file ended");
+                }
+                return false;
+            }
+            var args = new[] { "loadfile", file };
+            var ptrs = args.Select(Marshal.StringToCoTaskMemUTF8).Append(IntPtr.Zero).ToArray();
+            fixed (IntPtr* p = ptrs) MpvNative.mpv_command(ctx, p);
+            foreach (var q in ptrs) if (q != IntPtr.Zero) Marshal.FreeCoTaskMem(q);
+            if (!WaitFor(MpvEventId.FileLoaded, 8000)) throw new Exception("the file did not load");
+            if (!WaitFor(MpvEventId.PlaybackRestart, 8000)) throw new Exception("no first picture");
+            long w0 = Num("video-out-params/w"), h0 = Num("video-out-params/h");
+            // exactly what MpvPlayer.SetComposite does
+            if (Set("hwdec", "auto-copy-safe") < 0 && Set("hwdec", "auto-copy") < 0) throw new Exception("the player can't hand frames over in memory");
+            Set("video-rotate", "no");
+            var clock = Stopwatch.StartNew();
+            int r = Set("vf", $"lavfi=graph=%{Encoding.UTF8.GetByteCount(graph)}%{graph}");
+            if (r < 0) throw new Exception($"the player refused the filter ({r})");
+            // paused: the picture with the filter comes after the player has refreshed its frame, and it says so
+            bool told = WaitFor(MpvEventId.PlaybackRestart, 4000);
+            long ms = clock.ElapsedMilliseconds;
+            var sw2 = Stopwatch.StartNew();
+            while (sw2.ElapsedMilliseconds < 3000 && (Num("video-out-params/w") != w || Num("video-out-params/h") != h)) MpvNative.mpv_wait_event(ctx, 0.05);
+            long w1 = Num("video-out-params/w"), h1 = Num("video-out-params/h");
+            if (w1 != w || h1 != h) throw new Exception($"the player's picture is {w1}x{h1}, the filter makes {w}x{h} (before: {w0}x{h0})");
+            if (!told) throw new Exception("the paused player did not say when the filtered picture was there");
+            // and without it the plain video again
+            if (Set("vf", "") < 0) throw new Exception("the filter can't be taken away");
+            sw2.Restart();
+            while (sw2.ElapsedMilliseconds < 3000 && Num("video-out-params/w") != w0) MpvNative.mpv_wait_event(ctx, 0.05);
+            if (Num("video-out-params/w") != w0) throw new Exception("the plain video did not come back");
+            return $"the paused player shows {w1}x{h1} (was {w0}x{h0}) {ms} ms after the filter is set, and says so";
+        }
+        finally { MpvNative.mpv_terminate_destroy(ctx); }
     }
 
     private static string EditorLive(string dir, string mp4, string banner)
@@ -2961,7 +3902,7 @@ internal static class SelfTest
         // the picture editor with a caption chosen: the caption tool (the video editor's) floating over the picture
         {
             var capDoc = new MarkupDocument(ui.ToBitmap());
-            var cap = new CaptionAnnotation { Center = new Point(360, 300), Text = "Kliknij tutaj 👆", Style = CaptionStyle.Fill, Color = Captions.Palette[4], Size = 0.075, CanvasWidth = capDoc.Width, CanvasHeight = capDoc.Height };
+            var cap = new CaptionAnnotation { Center = new Point(360, 300), Text = "Kliknij tutaj 👆", Style = CaptionStyle.Fill, Color = Color.FromRgb(0xF2, 0xCD, 0x46), Size = 0.075, CanvasWidth = capDoc.Width, CanvasHeight = capDoc.Height };
             cap.WrapEm = Captions.WrapEmFor(cap.Size, capDoc.Width, capDoc.Height);
             capDoc.Items.Add(cap);
             var capEd = new EditorWindow(capDoc);
@@ -3024,6 +3965,27 @@ internal static class SelfTest
                 Snap(vid, 960, (int)Math.Ceiling(vid.DesiredSize.Height), file, Brushes.Black);
             }
 
+            // layers: the same video once more (its own bar), and a picture laid on the video
+            {
+                var layered = proj.Clone();
+                layered.Canvas.Format = CanvasFormat.Vertical;
+                var videoLayer = layered.AddLayer();
+                string logo = Path.Combine(dir, "render-picture.png");
+                File.WriteAllBytes(logo, ImageIO.EncodePng(still));
+                var pic = new ImageOverlay { Path = logo, Width = 160, Height = 90, Start = 2, End = 14, Size = 0.2 };
+                layered.Overlays.Add(pic);
+                layered.Changed();
+                foreach (var (sel, file) in new (EditOverlay, string)[] { (videoLayer, "editor-video-layer.png"), (pic, "editor-video-picture.png") })
+                {
+                    var vid = new VideoEditor();
+                    vid.TestStatic(layered, sel, false, 6.4);
+                    for (int k = 0; k < 16; k++) vid.Timeline.AddThumbnail(0, k * 1.5 + 0.75, still);
+                    vid.Timeline.SetWaveform(0, song);
+                    vid.Measure(new Size(960, double.PositiveInfinity));
+                    Snap(vid, 960, (int)Math.Ceiling(vid.DesiredSize.Height), file, Brushes.Black);
+                }
+            }
+
             // the start and the end trimmed off: still on the strip, dimmed
             {
                 var trimmed = proj.Clone();
@@ -3044,6 +4006,17 @@ internal static class SelfTest
             Snap(picker, 404, 396, "editor-video-emoji.png", Brushes.Black);
             picker.TestSearch("serce");
             Snap(picker, 404, 396, "editor-video-emoji-search.png", Brushes.Black);
+
+            // the caption tool's palette: every colour, and a few used lately (a list of the picture's own)
+            ColorPickerPanel.StoreOverride = new List<string> { "#FF3B30", "#FFD60A", "#30D158", "#0A84FF", "#BF5AF2" };
+            try
+            {
+                var palette = new ColorPickerPanel { Margin = new Thickness(14) };
+                palette.Open(Color.FromRgb(0xFF, 0xD6, 0x0A));
+                palette.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                Snap(palette, (int)Math.Ceiling(palette.DesiredSize.Width), (int)Math.Ceiling(palette.DesiredSize.Height), "editor-video-palette.png", Brushes.Black);
+            }
+            finally { ColorPickerPanel.StoreOverride = null; }
         }
         ov.Close();
 

@@ -983,7 +983,7 @@ public partial class PlayerWindow : Window
                 int newTop = Math.Max(info.rcWork.Top, r.Top - up);
                 int newH = Math.Min(info.rcWork.Height, r.Height + grow);
                 // the editor needs some width for its tools
-                int minW = (int)Math.Round(880 * scale), newW = Math.Min(info.rcWork.Width, Math.Max(r.Width, minW));
+                int minW = (int)Math.Round(900 * scale), newW = Math.Min(info.rcWork.Width, Math.Max(r.Width, minW));
                 int newLeft = Math.Clamp(r.Left - (newW - r.Width) / 2, info.rcWork.Left, Math.Max(info.rcWork.Left, info.rcWork.Right - newW));
                 Native.SetWindowPos(_hwnd, IntPtr.Zero, newLeft, newTop, newW, newH, Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
                 _panelGrow = newH - r.Height;
@@ -1038,6 +1038,7 @@ public partial class PlayerWindow : Window
     /// </summary>
     internal void SetPreviewFrame(Rect canvas, Rect visible, Rect video, double videoAspect, BitmapSource? blur)
     {
+        _mpv?.SetComposite(null);
         Backdrop.Visibility = Visibility.Visible;
         Canvas.SetLeft(BackdropFrame, canvas.X);
         Canvas.SetTop(BackdropFrame, canvas.Y);
@@ -1079,8 +1080,58 @@ public partial class PlayerWindow : Window
         BackdropImage.Source = blur;
     }
 
+    /// <summary>
+    /// The finished video's frame put together by a filter in the player (the video with further layers of itself, or
+    /// mirrored): the player's picture IS the frame - it fills <paramref name="canvas"/>, nothing is zoomed or moved.
+    /// </summary>
+    internal void SetPreviewComposite(Rect canvas, string graph)
+    {
+        Backdrop.Visibility = Visibility.Visible;
+        Canvas.SetLeft(BackdropFrame, canvas.X);
+        Canvas.SetTop(BackdropFrame, canvas.Y);
+        BackdropFrame.Width = Math.Max(1, canvas.Width);
+        BackdropFrame.Height = Math.Max(1, canvas.Height);
+        BackdropImage.Source = null;
+        BackdropImage.Visibility = BackdropDim.Visibility = Visibility.Collapsed;
+        if (_isAudio) return;
+        _host.Visibility = Visibility.Visible;
+        _host.HorizontalAlignment = HorizontalAlignment.Left;
+        _host.VerticalAlignment = VerticalAlignment.Top;
+        _host.Margin = new Thickness(canvas.X, canvas.Y, 0, 0);
+        _host.Width = Math.Max(1, canvas.Width);
+        _host.Height = Math.Max(1, canvas.Height);
+        if (_mpv == null) return;
+        _mpv.SetProperty("video-zoom", "0");
+        _mpv.SetProperty("video-pan-x", "0");
+        _mpv.SetProperty("video-pan-y", "0");
+        _mpv.SetComposite(graph);
+    }
+
+    /// <summary>How the player reads the open video's colours, in FFmpeg's words (bt709, bt601, bt2020) - null when it is something else.</summary>
+    internal string? ColorMatrix => _mpv?.GetString("video-params/colormatrix") switch
+    {
+        "bt.709" => "bt709",
+        "bt.601" => "bt601",
+        "bt.2020-ncl" or "bt.2020-cl" => "bt2020",
+        _ => null,
+    };
+
+    /// <summary>For the self-test: the picture the player is showing (after its filters), written to a file.</summary>
+    internal bool TestFrame(string path) => _mpv != null && _mpv.Command("screenshot-to-file", path, "video") >= 0;
+
+    /// <summary>How the open video is stored: turned by 90, 180 or 270 degrees (a phone held upright), or 0.</summary>
+    internal int StoredRotation
+    {
+        get
+        {
+            long r = _mpv?.GetLong("video-dec-params/rotate") ?? _mpv?.GetLong("video-params/rotate") ?? 0;
+            return (int)(((r % 360) + 360) % 360);
+        }
+    }
+
     internal void ResetPreviewFrame()
     {
+        _mpv?.SetComposite(null);
         Backdrop.Visibility = Visibility.Collapsed;
         BackdropImage.Source = null;
         _host.HorizontalAlignment = HorizontalAlignment.Stretch;

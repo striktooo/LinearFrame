@@ -75,10 +75,25 @@ public partial class VideoEditor : UserControl
         Timeline.SegmentSelected += i => { _selSeg = i; Select(null, keepSegment: true); };
         Timeline.OverlaySelected += o => Select(o);
         Timeline.OverlayMoved += OnBarMoved;
+        Timeline.OverlayReordered += OnBarReordered;
+        Timeline.ReorderEnded += () =>
+        {
+            _dragCommitted = false;
+            Refresh(playback: false);
+        };
         Timeline.SegmentTrimmed += OnTrimmed;
         Caption.TextEdited += OnCaptionText;
         Caption.StyleChosen += OnCaptionStyle;
         Caption.ColorChosen += OnCaptionColor;
+        Caption.FontChosen += OnCaptionFont;
+        Caption.DuplicateRequested += DuplicateSelection;
+        Caption.LayerTools = true;
+        _graphTimer.Tick += (_, _) => GraphTick();
+        _stillSettle.Tick += (_, _) =>
+        {
+            _stillSettle.Stop();
+            FetchStill();
+        };
         Caption.SizeChosen += (size, final) => { if (_sel is TextOverlay) SetSize(size, final); };
         Caption.DeleteRequested += () => { if (_sel != null) DeleteOverlay(_sel); };
         Caption.Finished += () =>
@@ -87,10 +102,11 @@ public partial class VideoEditor : UserControl
             if (_win != null) Keyboard.Focus(_win);
         };
         Caption.Redraw += () => { UpdateLayer(force: true); Timeline.Rebuild(); };
-        ItemSize.ValueChanging += v => SetSize(ItemSizeFrom(v), false);
-        ItemSize.ValueCommitted += v => SetSize(ItemSizeFrom(v), true);
-        ZoomSlider.ValueChanging += v => SetZoom(ZoomFrom(v), false);
-        ZoomSlider.ValueCommitted += v => SetZoom(ZoomFrom(v), true);
+        // the item row's slider is the size of a picture / emoji / banner - and the zoom of a video layer
+        ItemSize.ValueChanging += v => { if (_sel is VideoLayer vl) SetZoom(vl, ZoomFrom(v), false); else SetSize(v, false); };
+        ItemSize.ValueCommitted += v => { if (_sel is VideoLayer vl) SetZoom(vl, ZoomFrom(v), true); else SetSize(v, true); };
+        ZoomSlider.ValueChanging += v => SetZoom(_p.Canvas, ZoomFrom(v), false);
+        ZoomSlider.ValueCommitted += v => SetZoom(_p.Canvas, ZoomFrom(v), true);
         BuildFormatButtons();
     }
 
@@ -143,9 +159,13 @@ public partial class VideoEditor : UserControl
         layer.EditTextRequested += OnLayerEditText;
         layer.VideoPanned += OnVideoPanned;
         layer.VideoZoomed += OnVideoZoomed;
+        layer.FrameChanged += OnFrameChanged;
+        layer.VideoSelected += OnVideoSelected;
+        _graphWanted = _graphShown = null;
+        _graphBusy = false;
 
         bool audioOnly = !clip.HasVideo;
-        foreach (var b in new UIElement[] { TextBtn, BannerBtn, FormatBtn, ClipBtn, ToolsSep })
+        foreach (var b in new UIElement[] { TextBtn, ImageBtn, BannerBtn, FormatBtn, ClipBtn, ToolsSep })
             b.Visibility = audioOnly ? Visibility.Collapsed : Visibility.Visible;
         _sprite = new LayeredSprite(win.Handle);
         Timeline.SetProject(_p);
@@ -190,7 +210,19 @@ public partial class VideoEditor : UserControl
             layer.EditTextRequested -= OnLayerEditText;
             layer.VideoPanned -= OnVideoPanned;
             layer.VideoZoomed -= OnVideoZoomed;
+            layer.FrameChanged -= OnFrameChanged;
+            layer.VideoSelected -= OnVideoSelected;
         }
+        _graphTimer.Stop();
+        _graphWanted = _graphShown = null;
+        _graphBusy = false;
+        _stillSettle.Stop();
+        _stillCts?.Cancel();
+        _stillShown = false;
+        _still = null;
+        _stillAt = (-1, 0);
+        _ov?.EditLayer.SetStill(null, null, false);
+        EditImages.Clear();
         _sprite?.Dispose();
         _sprite = null;
         DropStream();
@@ -290,11 +322,14 @@ public partial class VideoEditor : UserControl
             else _mpv.SetProperty("pause", "yes");
             _mpv.StopAt = double.NaN;
             StopAudio();
+            WantStill();
         }
         else
         {
             if (_f >= _p.FinalLength - 0.04) Seek(0, true);
             _playing = true;
+            StillOff();
+            _stillSettle.Stop();
             if (_hold >= 0) _holdStarted = Stopwatch.GetTimestamp();
             else if (!_scrubbing) // the hand on the playhead: it plays from where it is let go
             {
@@ -324,7 +359,152 @@ public partial class VideoEditor : UserControl
     }
 
     /// <summary>The player has the picture of a seek on screen (told by the player window).</summary>
-    internal void OnSeekLanded() => _scrub.Landed();
+    internal void OnSeekLanded()
+    {
+        _scrub.Landed();
+        // a paused player has just shown the layers as they were last sent: the next change may go
+        if (_graphBusy && Stopwatch.GetElapsedTime(_graphSent).TotalMilliseconds > 8)
+        {
+            _graphBusy = false;
+            if (_graphWanted != null && _graphWanted != _graphShown) SendGraph();
+        }
+    }
+
+    // ---- the picture with layers: put together by a filter in the player (EditGraph), one change at a time
+
+    private string? _graphWanted, _graphShown;
+    private bool _graphBusy;
+    private long _graphSent;
+    private readonly System.Windows.Threading.DispatcherTimer _graphTimer = new() { Interval = TimeSpan.FromMilliseconds(30) };
+
+    /// <summary>
+    /// Asks the player for this picture. While a layer is dragged the asks come with every move of the mouse; a paused
+    /// player needs a moment for each (it decodes its frame again), so the next one goes out when the last has been
+    /// shown - always the newest, none queue up.
+    /// </summary>
+    private void ShowComposite(string graph)
+    {
+        _graphWanted = graph;
+        if (_graphBusy)
+        {
+            // the frame may have moved meanwhile (the window resized): the player's picture follows at once
+            _win?.SetPreviewComposite(_canvas, _graphShown ?? graph);
+            if (!_graphTimer.IsEnabled) _graphTimer.Start();
+            return;
+        }
+        SendGraph();
+    }
+
+    private void SendGraph()
+    {
+        if (_win == null || _graphWanted == null) { _graphTimer.Stop(); return; }
+        bool same = _graphWanted == _graphShown;
+        _win.SetPreviewComposite(_canvas, _graphWanted);
+        if (same)
+        {
+            // nothing new for the player (the video was already as far as it goes, say): its picture is right as it is
+            StillOffIfLanded();
+            return;
+        }
+        _graphShown = _graphWanted;
+        _graphBusy = true;
+        _graphSent = Stopwatch.GetTimestamp();
+        _graphTimer.Start();
+    }
+
+    private void GraphTick()
+    {
+        // playing: the very next frames have the change; paused: the player tells (OnSeekLanded), this is the fallback
+        if (_graphBusy && Stopwatch.GetElapsedTime(_graphSent).TotalMilliseconds < (_playing ? 45 : 400)) return;
+        _graphBusy = false;
+        if (_graphWanted != null && _graphWanted != _graphShown) SendGraph();
+        else
+        {
+            _graphTimer.Stop();
+            StillOffIfLanded();
+        }
+    }
+
+    private void DropComposite()
+    {
+        _graphTimer.Stop();
+        _graphWanted = _graphShown = null;
+        _graphBusy = false;
+        StillOff();
+    }
+
+    // ---- the clip's frame under the playhead: while a layer is dragged, the layers are drawn from it at once
+    //      (EditCanvasLayer.SetStill) and the player - which needs up to a quarter of a second per change - follows
+
+    private System.Windows.Media.Imaging.BitmapSource? _still;
+    private (int Clip, double T) _stillAt = (-1, 0);
+    private CancellationTokenSource? _stillCts;
+    private bool _stillShown;
+    private readonly System.Windows.Threading.DispatcherTimer _stillSettle = new() { Interval = TimeSpan.FromMilliseconds(140) };
+
+    private (int Clip, double T) StillSpot() => _p.EToClip(_p.FToE(_f).E);
+
+    private bool StillFits
+    {
+        get
+        {
+            if (_still == null) return false;
+            var (k, t) = StillSpot();
+            return k == _stillAt.Clip && Math.Abs(t - _stillAt.T) < 0.005;
+        }
+    }
+
+    /// <summary>The playhead rests on a frame while layers share the picture: that frame is fetched, ready for a drag.</summary>
+    private void WantStill()
+    {
+        if (_win == null || !_p.IsComposite || _playing || _scrubbing || StillFits) return;
+        _stillSettle.Stop();
+        _stillSettle.Start();
+    }
+
+    private async void FetchStill()
+    {
+        if (_win == null || !_p.IsComposite || _playing || _scrubbing || StillFits || !Ffmpeg.Available) return;
+        var (k, t) = StillSpot();
+        var clip = _p.Clips[k];
+        if (!clip.HasVideo) return;
+        _stillCts?.Cancel();
+        var cts = _stillCts = new CancellationTokenSource();
+        try
+        {
+            var bmp = await Ffmpeg.Frame(clip.Path, t, Math.Clamp(clip.Height, 2, 1080), cts.Token, _win.ColorMatrix);
+            if (cts.IsCancellationRequested || _win == null || bmp == null) return;
+            var (k2, t2) = StillSpot();
+            if (k2 != k || Math.Abs(t2 - t) > 0.005) return; // the playhead has moved on meanwhile
+            _still = bmp;
+            _stillAt = (k, t);
+            if (_stillShown) _ov?.EditLayer.SetStill(_still, clip, true); // a drag is on: it takes over right now
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Log.Error("Still frame", ex); }
+    }
+
+    /// <summary>A layer is being changed by hand: the layers are drawn from the still from now on (when this frame's is there).</summary>
+    private void StillOn()
+    {
+        if (_ov == null || _playing || !_p.IsComposite) return;
+        _stillShown = true;
+        if (StillFits) _ov.EditLayer.SetStill(_still, _p.Clips[_stillAt.Clip], true);
+        else WantStill();
+    }
+
+    /// <summary>The hand has let go and the player shows the layers as they are now: its own picture again.</summary>
+    private void StillOffIfLanded()
+    {
+        if (!_stillShown || _dragCommitted || _graphBusy || _graphWanted != _graphShown) return;
+        StillOff();
+    }
+
+    private void StillOff()
+    {
+        _stillShown = false;
+        _ov?.EditLayer.SetStill(_still, _still != null && _stillAt.Clip >= 0 && _stillAt.Clip < _p.Clips.Count ? _p.Clips[_stillAt.Clip] : null, false);
+    }
 
     /// <summary>A jump of its own (keys, a click on a bar, the end of a freeze): exact, and noted.</summary>
     private void SeekExact(double e)
@@ -344,6 +524,7 @@ public partial class VideoEditor : UserControl
         }
         if (final) _scrubbing = false;
         _f = Math.Clamp(f, 0, _p.FinalLength);
+        if (_stillShown) StillOff(); // another frame: the still of the old one must not stay on top
         _afterHold = -1;
         var (e, hold, into) = _p.FToE(_f);
         if (_loaded.StartsWith("%raw%", StringComparison.Ordinal)) _loaded = ""; // back from a trim preview
@@ -360,6 +541,7 @@ public partial class VideoEditor : UserControl
         UpdateLayer();
         UpdateBanner();
         SyncAudio(seek: true);
+        if (final) WantStill();
     }
 
     private void Hook(bool on)
@@ -480,19 +662,43 @@ public partial class VideoEditor : UserControl
         _frameClip = k;
         double clipAspect = clip.Width / (double)Math.Max(1, clip.Height);
         var c = _p.Canvas;
+        if (_p.IsComposite && clip.HasVideo)
+        {
+            // layers of the video (or the video mirrored): a filter in the player draws the whole frame - the same graph
+            // that makes the file, at the size the frame has on screen (in steps of 16 px, so a window being resized
+            // doesn't ask for a new one with every pixel)
+            double dpi = VisualTreeHelper.GetDpi(this).DpiScaleX;
+            double scale = Math.Min(1, _canvas.Width * dpi / cw);
+            int pw = Math.Clamp((int)Math.Round(cw * scale / 16) * 16, 32, Math.Max(32, cw));
+            int ph = Math.Max(2, (int)Math.Round(pw * (double)ch / cw / 2) * 2);
+            ShowComposite(EditGraph.Preview(_p, clip, pw, ph, _win.StoredRotation));
+            WantStill();
+            UpdateLayer(force: true);
+            return;
+        }
+        DropComposite();
         // the picture fills the frame exactly as the player shows it anyway: nothing to do
         bool plain = c.Format == CanvasFormat.Original && Math.Abs(c.Scale - 1) < 1e-6 && Math.Abs(c.CX - 0.5) < 1e-6 && Math.Abs(c.CY - 0.5) < 1e-6
-                     && Math.Abs(clipAspect - cw / (double)ch) < 0.01;
+                     && c.WholeFrame && Math.Abs(clipAspect - cw / (double)ch) < 0.01;
         if (plain || !clip.HasVideo) _win.ResetPreviewFrame();
         else
         {
             var v = _p.VideoRect(clip, _canvas.Width, _canvas.Height);
             v.Offset(_canvas.X, _canvas.Y);
-            var vis = Rect.Intersect(v, _canvas);
+            var frame = EditProject.FrameRect(c, _canvas.Width, _canvas.Height);
+            frame.Offset(_canvas.X, _canvas.Y);
+            var vis = Rect.Intersect(Rect.Intersect(v, frame), _canvas);
             var blur = c.Background == CanvasBackground.Blur ? Timeline.Thumbnail(k, t) : null;
             _win.SetPreviewFrame(_canvas, vis, v, clipAspect, blur);
         }
         UpdateLayer(force: true);
+    }
+
+    /// <summary>The clip under the playhead (video layers are measured against its picture).</summary>
+    private EditClip CurrentClip()
+    {
+        var clip = _p.Clips[_p.EToClip(_p.FToE(_f).E).Clip];
+        return clip.HasVideo ? clip : _p.FirstVideo;
     }
 
     private void UpdateLayer(bool force = false)
@@ -740,6 +946,13 @@ public partial class VideoEditor : UserControl
         var (cw, ch) = _p.CanvasSize();
         string len = EditTimeline.Clock(_p.FinalLength, false);
         InfoText.Text = _p.IsAudioOnly ? L.F("Edit.InfoAudio", len) : L.F("Edit.Info", len, cw, ch);
+        if (!_p.IsAudioOnly && (_sel is VideoLayer || _format))
+        {
+            // a video is picked up: what the mouse does with it
+            InfoIcon.Visibility = Visibility.Collapsed;
+            InfoNote.Text = L.T("Edit.LayerHint");
+            return;
+        }
         bool copy = EditExport.CanCopy(_p, _keyframes, _reordered);
         InfoIcon.Visibility = copy ? Visibility.Visible : Visibility.Collapsed;
         InfoNote.Text = copy ? (_snapped ? L.T("Edit.Snapped") : L.T("Player.Lossless"))
@@ -768,13 +981,22 @@ public partial class VideoEditor : UserControl
                 ShowRow(Caption);
                 Caption.Show(t);
             }
-            else if (o is EmojiOverlay or BannerOverlay)
+            else if (o != null)
             {
                 _format = false;
                 ShowRow(ItemRow);
-                ItemTitle.Text = o is BannerOverlay b ? L.T("Edit.BannerItem") + " · " + Path.GetFileNameWithoutExtension(b.Asset.Path) : L.T("Edit.EmojiItem");
+                ItemTitle.Text = o switch
+                {
+                    BannerOverlay b => L.T("Edit.BannerItem") + " · " + Path.GetFileNameWithoutExtension(b.Asset.Path),
+                    VideoLayer => L.T("Edit.LayerItem"),
+                    ImageOverlay im => L.T("Edit.ImageItem") + " · " + Path.GetFileNameWithoutExtension(im.Path),
+                    _ => L.T("Edit.EmojiItem"),
+                };
                 BannerPlace.Visibility = o is BannerOverlay ? Visibility.Visible : Visibility.Collapsed;
-                ItemSize.Value = ItemSizeTo(o);
+                LayerFit.Visibility = o is VideoLayer ? Visibility.Visible : Visibility.Collapsed;
+                ItemSizeLabel.Text = L.T(o is VideoLayer ? "Edit.Zoom" : "Edit.Size");
+                ItemFlip.Visibility = ItemDuplicate.Visibility = o is BannerOverlay ? Visibility.Collapsed : Visibility.Visible;
+                ItemSize.Value = o is VideoLayer layer ? ZoomTo(layer.Scale) : ItemSizeTo(o);
             }
             else if (!_format) ShowRow(ToolsRow);
         }
@@ -782,6 +1004,7 @@ public partial class VideoEditor : UserControl
         Timeline.Select(_selSeg, _sel);
         UpdateLayer(force: true);
         DeleteBtn.IsEnabled = _sel != null || _selSeg >= 0 && _p.Segments.Count > 1;
+        UpdateInfo();
     }
 
     private void Done_Click(object sender, RoutedEventArgs e)
@@ -790,6 +1013,7 @@ public partial class VideoEditor : UserControl
         Select(null);
         ShowRow(ToolsRow);
         UpdateFrame();
+        UpdateInfo();
     }
 
     // ---- layer (the picture) events
@@ -826,16 +1050,49 @@ public partial class VideoEditor : UserControl
         Caption.FocusText();
     }
 
-    private void OnVideoPanned(double cx, double cy, bool final)
+    private void OnVideoPanned(IVideoPlacement l, double cx, double cy, bool final)
     {
         if (!_dragCommitted) { Commit(); _dragCommitted = true; }
-        _p.Canvas.CX = Math.Clamp(cx, -0.5, 1.5);
-        _p.Canvas.CY = Math.Clamp(cy, -0.5, 1.5);
+        l.CX = cx;
+        l.CY = cy;
+        var (cw, ch) = _p.CanvasSize();
+        EditProject.KeepInFrame(CurrentClip(), l, cw, ch);
         if (final) { _dragCommitted = false; UpdateInfo(); }
+        StillOn();
         UpdateFrame();
     }
 
-    private void OnVideoZoomed(double k) => SetZoom(_p.Canvas.Scale * k, true);
+    private void OnVideoZoomed(IVideoPlacement l, double k, Point at) => SetZoom(l, l.Scale * k, true, at);
+
+    /// <summary>A layer's frame was dragged: an edge (the video stays where it is) or the whole layer (the video goes along).</summary>
+    private void OnFrameChanged(IVideoPlacement l, Rect frame, bool moved, bool final)
+    {
+        if (!_dragCommitted) { Commit(); _dragCommitted = true; }
+        var (cw, ch) = _p.CanvasSize();
+        if (moved)
+        {
+            l.FX = frame.X;
+            l.FY = frame.Y;
+        }
+        else EditProject.SetFrame(CurrentClip(), l, frame, cw, ch);
+        if (final) { _dragCommitted = false; UpdateInfo(); }
+        _suppress = true;
+        if (ReferenceEquals(l, _p.Canvas)) ZoomSlider.Value = ZoomTo(l.Scale); else ItemSize.Value = ZoomTo(l.Scale);
+        _suppress = false;
+        StillOn();
+        UpdateFrame();
+    }
+
+    /// <summary>The video itself was clicked while layers share the picture: the Format tool, with the video picked up.</summary>
+    private void OnVideoSelected()
+    {
+        _format = true;
+        Select(null);
+        ShowRow(FormatRow);
+        SyncFormatControls();
+        UpdateFrame();
+        UpdateInfo();
+    }
 
     // ---- timeline events
 
@@ -868,6 +1125,24 @@ public partial class VideoEditor : UserControl
             UpdateLayer(force: true);
             UpdateBanner();
         }
+    }
+
+    /// <summary>
+    /// A bar was dragged to another lane: its item goes right in front of the other one, or right behind it. (What lies
+    /// on the video is drawn in the order of the list, within its kind: the layers of the video, then captions and
+    /// pictures, the banner on top.) The drag ends with the bar's final move, which closes the undo step.
+    /// </summary>
+    private void OnBarReordered(EditOverlay o, EditOverlay other, bool inFront)
+    {
+        int from = _p.Overlays.IndexOf(o);
+        if (from < 0 || !_p.Overlays.Contains(other) || ReferenceEquals(o, other)) return;
+        if (!_dragCommitted) { Commit(); _dragCommitted = true; }
+        _p.Overlays.RemoveAt(from);
+        int at = _p.Overlays.IndexOf(other) + (inFront ? 1 : 0);
+        _p.Overlays.Insert(Math.Clamp(at, 0, _p.Overlays.Count), o);
+        _p.Changed();
+        Timeline.Rebuild();
+        if (o is VideoLayer) UpdateFrame(); else UpdateLayer(force: true);
     }
 
     private void OnTrimmed(int seg, bool start, double t, bool final)
@@ -956,13 +1231,148 @@ public partial class VideoEditor : UserControl
     private void DeleteOverlay(EditOverlay o)
     {
         Commit();
-        _p.Overlays.Remove(o);
+        _p.Remove(o);
         bool banner = o is BannerOverlay;
         Select(null);
         Refresh(playback: banner);
     }
 
     private void ItemDelete_Click(object sender, RoutedEventArgs e) { if (_sel != null) DeleteOverlay(_sel); }
+
+    // ---- video layers, pictures, mirror, duplicate
+
+    /// <summary>
+    /// The same video once more as a layer (the video duplicated: the copy button of the Format tool, or Ctrl+D with
+    /// nothing else picked up). The first one shares the frame with the video - two halves, each filled - and is picked
+    /// up at once: the wheel zooms it (far enough for a small camera picture), dragging moves the video in it.
+    /// </summary>
+    private void AddLayer()
+    {
+        if (_p.IsAudioOnly) return;
+        Commit();
+        var layer = _p.AddLayer();
+        Select(layer);
+        Refresh(playback: false);
+    }
+
+    private void Image_Click(object sender, RoutedEventArgs e) => AddImage(null);
+
+    /// <summary>A picture onto the video: in the middle, for the whole video - then moved, resized, mirrored, trimmed on the time line.</summary>
+    private void AddImage(string? path)
+    {
+        if (_p.IsAudioOnly) return;
+        if (path == null)
+        {
+            var pictures = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+            var dlg = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = L.T("Edit.ImagePick"),
+                Filter = $"{L.T("Edit.ImageFilter")}|{string.Join(";", MediaFormats.Images.Select(x => "*" + x))}|{L.T("Player.FilterAny")}|*.*",
+                InitialDirectory = File.Exists(_lastImage) ? Path.GetDirectoryName(_lastImage) : Directory.Exists(pictures) ? pictures : null,
+            };
+            if (dlg.ShowDialog(_win) != true) return;
+            path = dlg.FileName;
+        }
+        var size = EditImages.Size(path);
+        if (size == null || EditImages.Preview(path) == null)
+        {
+            if (_win != null) Hud.Show(L.T("Edit.ImageFailed"), "info", _win);
+            return;
+        }
+        _lastImage = path;
+        Commit();
+        var (cw, ch) = _p.CanvasSize();
+        double aspect = size.Value.Width / (double)Math.Max(1, size.Value.Height);
+        var im = new ImageOverlay
+        {
+            Path = path,
+            Width = size.Value.Width,
+            Height = size.Value.Height,
+            Start = 0,
+            End = _p.SourceLength,
+            X = 0.5,
+            Y = 0.5,
+            // at most half the frame's height and 60 % of its width
+            Size = Math.Min(0.5, 0.6 * cw / (ch * aspect)),
+        };
+        _p.Overlays.Add(im);
+        Select(im);
+        Refresh(playback: false);
+    }
+
+    private string _lastImage = "";
+
+    private void Duplicate_Click(object sender, RoutedEventArgs e) => DuplicateSelection();
+
+    /// <summary>
+    /// A second one of what is picked up, a little to the side and right above it. With no item picked up it is the
+    /// video itself that is duplicated: a new layer of the video.
+    /// </summary>
+    private void DuplicateSelection()
+    {
+        if (_p.IsAudioOnly || _sel is BannerOverlay) return;
+        if (_sel == null)
+        {
+            AddLayer();
+            return;
+        }
+        Commit();
+        var copy = _sel.Duplicate();
+        if (copy is VideoLayer vl)
+        {
+            vl.FX = Math.Clamp(vl.FX + 0.04, 0, Math.Max(0, 1 - vl.FW));
+            vl.FY = Math.Clamp(vl.FY + 0.04, 0, Math.Max(0, 1 - vl.FH));
+        }
+        else
+        {
+            copy.X = Math.Min(1.1, copy.X + 0.04);
+            copy.Y = Math.Min(1.1, copy.Y + 0.04);
+        }
+        int at = _p.Overlays.IndexOf(_sel);
+        _p.Overlays.Insert(at < 0 ? _p.Overlays.Count : at + 1, copy);
+        Select(copy);
+        Refresh(playback: false);
+    }
+
+    private void Flip_Click(object sender, RoutedEventArgs e) => FlipSelection();
+
+    /// <summary>
+    /// Mirrors what is picked up - a picture, an emoji, a video layer, or the video itself with the Format tool open.
+    /// Not a caption (mirrored writing is no use) and not a banner.
+    /// </summary>
+    private void FlipSelection()
+    {
+        if (_p.IsAudioOnly || _sel is BannerOverlay or TextOverlay || _sel == null && !_format) return;
+        Commit();
+        if (_sel is IVideoPlacement layer) MirrorVideo(layer);
+        else if (_sel != null) _sel.Flip = !_sel.Flip;
+        else MirrorVideo(_p.Canvas);
+        UpdateFrame();
+        UpdateInfo();
+    }
+
+    /// <summary>What shows in the frame is mirrored where it is (the video is turned over around the frame's middle).</summary>
+    private static void MirrorVideo(IVideoPlacement l)
+    {
+        l.Flip = !l.Flip;
+        l.CX = 1 - l.CX;
+    }
+
+    private void LayerFit_Click(object sender, RoutedEventArgs e) => PlaceLayer(fill: false);
+    private void LayerFill_Click(object sender, RoutedEventArgs e) => PlaceLayer(fill: true);
+
+    private void PlaceLayer(bool fill)
+    {
+        if (_sel is not VideoLayer vl) return;
+        Commit();
+        var (cw, ch) = _p.CanvasSize();
+        vl.Scale = fill ? EditProject.FillScale(CurrentClip(), vl, cw, ch) : 1;
+        vl.CX = vl.CY = 0.5;
+        _suppress = true;
+        ItemSize.Value = ZoomTo(vl.Scale);
+        _suppress = false;
+        Refresh(playback: false);
+    }
 
     // ---- captions
 
@@ -999,6 +1409,7 @@ public partial class VideoEditor : UserControl
         if (_sel is not TextOverlay t) return;
         if (!_textCommitted) { Commit(); _textCommitted = true; }
         var (cw, ch) = _p.CanvasSize();
+        t.Spans = ColorSpans.Rebase(t.Spans, t.Text, text); // coloured words stay coloured while the text around them changes
         t.Text = text;
         t.WrapEm = Captions.WrapEmFor(t.Size, cw, ch); // typing breaks lines at the frame's width; resizing later doesn't
         UpdateLayer(force: true);
@@ -1013,36 +1424,71 @@ public partial class VideoEditor : UserControl
         UpdateLayer(force: true);
     }
 
-    private void OnCaptionColor(Color color)
+    private bool _colorCommitted;
+
+    /// <summary>
+    /// A colour for the selected part of the text (length &gt; 0), or for the whole caption. While the mouse moves over
+    /// the palette the caption follows it (<paramref name="final"/> false); the whole pick is one step to undo.
+    /// </summary>
+    private void OnCaptionColor(Color color, int start, int length, bool final)
     {
-        if (_sel is not TextOverlay t || t.Color == color) return;
+        if (_sel is TextOverlay t)
+        {
+            var whole = length > 0 ? t.Color : color;
+            var spans = length > 0 ? ColorSpans.Paint(t.Spans, start, length, color) : Array.Empty<ColorSpan>();
+            // the colour it already has: nothing to draw, and no step to undo that would undo nothing
+            if (whole != t.Color || ColorSpans.Key(spans) != ColorSpans.Key(t.Spans))
+            {
+                if (!_colorCommitted) { Commit(); _colorCommitted = true; }
+                t.Color = whole;
+                t.Spans = spans;
+                UpdateLayer(force: true);
+            }
+        }
+        if (final) _colorCommitted = false;
+    }
+
+    private void OnCaptionFont(string? font)
+    {
+        if (_sel is not TextOverlay t || t.Font == font) return;
         Commit();
-        t.Color = color;
+        t.Font = font;
         UpdateLayer(force: true);
     }
 
     // ---- sizes (sliders are 0..1)
 
-    private static double ItemSizeFrom(double v) => v;
-    private double ItemSizeTo(EditOverlay o) => o is BannerOverlay ? Math.Clamp((o.Size - 0.25) / (1.4 - 0.25), 0, 1) : Math.Clamp((o.Size - 0.04) / (0.6 - 0.04), 0, 1);
-    private static double ZoomFrom(double v) => 0.4 * Math.Pow(10, v);
-    private static double ZoomTo(double s) => Math.Clamp(Math.Log10(s / 0.4), 0, 1);
+    // pictures go from a small sticker to bigger than the frame: an even feel along the slider needs steps in proportion
+    private const double ImageMin = 0.03, ImageSpan = 60;
+
+    private double ItemSizeTo(EditOverlay o) => o switch
+    {
+        BannerOverlay => Math.Clamp((o.Size - 0.25) / (1.4 - 0.25), 0, 1),
+        ImageOverlay => Math.Clamp(Math.Log(Math.Max(1e-6, o.Size) / ImageMin) / Math.Log(ImageSpan), 0, 1),
+        _ => Math.Clamp((o.Size - 0.04) / (0.6 - 0.04), 0, 1),
+    };
+
+    // the zoom slider: from 0.4 (small in its frame) up to EditProject.MaxZoom, in proportion
+    private static double ZoomFrom(double v) => 0.4 * Math.Pow(EditProject.MaxZoom / 0.4, v);
+    private static double ZoomTo(double s) => Math.Clamp(Math.Log(Math.Max(1e-6, s) / 0.4) / Math.Log(EditProject.MaxZoom / 0.4), 0, 1);
 
     private static double ClampSize(EditOverlay o, double s) => o switch
     {
         TextOverlay => Math.Clamp(s, 0.012, 0.25),
         EmojiOverlay => Math.Clamp(s, 0.03, 0.9),
+        ImageOverlay => Math.Clamp(s, 0.02, 2.5),
         _ => Math.Clamp(s, 0.15, 1.6),
     };
 
     private void SetSize(double v, bool final)
     {
-        if (_suppress || _sel == null) return;
+        if (_suppress || _sel == null || _sel is VideoLayer) return;
         if (!_dragCommitted) { Commit(); _dragCommitted = true; }
         _sel.Size = ClampSize(_sel, _sel switch
         {
             TextOverlay => v,
             BannerOverlay => 0.25 + v * (1.4 - 0.25),
+            ImageOverlay => ImageMin * Math.Pow(ImageSpan, v),
             _ => 0.04 + v * (0.6 - 0.04),
         });
         if (final) _dragCommitted = false;
@@ -1127,6 +1573,7 @@ public partial class VideoEditor : UserControl
         ShowRow(_format ? FormatRow : ToolsRow);
         SyncFormatControls();
         UpdateFrame();
+        UpdateInfo();
     }
 
     private void BuildFormatButtons()
@@ -1140,10 +1587,14 @@ public partial class VideoEditor : UserControl
                 if (_suppress || _p.Canvas.Format == f) return;
                 Commit();
                 _p.Canvas.Format = f;
-                _p.Canvas.Scale = 1;
-                _p.Canvas.CX = _p.Canvas.CY = 0.5;
-                // a phone-shaped frame from a landscape video: fill it, like TikTok does
                 var (cw, ch) = _p.CanvasSize();
+                if (_p.Canvas.WholeFrame && !_p.Overlays.Any(o => o is VideoLayer))
+                {
+                    _p.Canvas.Scale = 1;
+                    _p.Canvas.CX = _p.Canvas.CY = 0.5;
+                }
+                else _p.Reframe(); // the picture is shared out: the frames follow the new shape and are filled again
+                // a phone-shaped frame from a landscape video: fill it, like TikTok does
                 if (f != CanvasFormat.Original && _p.FirstVideo.HasVideo && _p.FirstVideo.Width > _p.FirstVideo.Height != cw > ch) _p.Canvas.Background = CanvasBackground.Blur;
                 SyncFormatControls();
                 Refresh(playback: false);
@@ -1198,15 +1649,29 @@ public partial class VideoEditor : UserControl
         Refresh(playback: false);
     }
 
-    private void SetZoom(double scale, bool final)
+    /// <summary>
+    /// The zoom of a video in its frame. <paramref name="at"/> (canvas, 0..1): the point of the video there stays there -
+    /// the wheel zooms into what the cursor is on (a camera picture in a corner), not into the middle.
+    /// </summary>
+    private void SetZoom(IVideoPlacement l, double scale, bool final, Point? at = null)
     {
         if (_suppress) return;
         if (!_dragCommitted) { Commit(); _dragCommitted = true; }
-        _p.Canvas.Scale = Math.Clamp(scale, 0.3, 6);
+        double old = l.Scale, next = Math.Clamp(scale, EditProject.MinZoom, EditProject.MaxZoom);
+        if (at is Point a && old > 0 && l.FW > 0 && l.FH > 0)
+        {
+            double ax = (a.X - l.FX) / l.FW, ay = (a.Y - l.FY) / l.FH, k = next / old;
+            l.CX = ax + (l.CX - ax) * k;
+            l.CY = ay + (l.CY - ay) * k;
+        }
+        l.Scale = next;
+        var (cw, ch) = _p.CanvasSize();
+        EditProject.KeepInFrame(CurrentClip(), l, cw, ch);
         if (final) { _dragCommitted = false; UpdateInfo(); }
         _suppress = true;
-        ZoomSlider.Value = ZoomTo(_p.Canvas.Scale);
+        if (ReferenceEquals(l, _p.Canvas)) ZoomSlider.Value = ZoomTo(next); else ItemSize.Value = ZoomTo(next);
         _suppress = false;
+        StillOn();
         UpdateFrame();
     }
 
@@ -1266,6 +1731,52 @@ public partial class VideoEditor : UserControl
     }
     internal void TestSelect(EditOverlay? o) => Select(o);
     internal void TestDone() => Done_Click(this, new RoutedEventArgs());
+    internal VideoLayer? TestAddLayer() { AddLayer(); return _sel as VideoLayer; }
+    internal ImageOverlay? TestAddImage(string path) { AddImage(path); return _sel as ImageOverlay; }
+    internal EditOverlay? TestDuplicate() { DuplicateSelection(); return _sel; }
+    internal void TestDelete() => DeleteSelection();
+    internal void TestUndo() => Undo();
+    /// <summary>The banner's picture is on screen, and the two windows over the video: the banner's and the one with captions and pictures.</summary>
+    internal bool TestBannerShown => _sprite?.Visible ?? false;
+    internal (IntPtr Banner, IntPtr Layer) TestWindows => (_sprite?.Handle ?? IntPtr.Zero, _ov?.Handle ?? IntPtr.Zero);
+    internal bool TestFormatOpen => _format;
+    internal void TestFlip() => FlipSelection();
+    internal void TestColor(Color color, int start, int length) => Caption.TestColor(color, start, length);
+    /// <summary>The palette opened for a part of the caption's text (0 long = the whole caption) and a colour under the mouse / chosen.</summary>
+    internal void TestPalette(int start, int length, Color color, bool final)
+    {
+        Caption.TestPaletteFor(start, length);
+        Caption.TestPalettePick(color, final);
+    }
+    internal void TestZoom(IVideoPlacement l, double scale, Point? at = null) => SetZoom(l, scale, true, at);
+    internal void TestPan(IVideoPlacement l, double cx, double cy) => OnVideoPanned(l, cx, cy, true);
+    internal void TestFrame(IVideoPlacement l, Rect frame, bool moved) => OnFrameChanged(l, frame, moved, true);
+    /// <summary>The filter the player was last asked to show (null while the plain video is enough).</summary>
+    internal string? TestComposite => _graphWanted;
+    /// <summary>A change of the layers is still on its way to the screen.</summary>
+    internal bool TestCompositeBusy => _graphBusy || _graphWanted != _graphShown;
+    /// <summary>The frame under the playhead is there for drawing the layers during a drag.</summary>
+    internal bool TestStillReady => StillFits;
+    internal bool TestStillShown => _ov?.EditLayer.ShowsStill ?? false;
+    /// <summary>The layer over the picture that takes the mouse (its PressAt / MoveTo / Release / WheelAt are what the mouse does).</summary>
+    internal EditCanvasLayer? TestCanvas => _ov?.EditLayer;
+    /// <summary>A move of a drag (not let go yet), or its end.</summary>
+    internal void TestDrag(IVideoPlacement l, double cx, double cy, bool final) => OnVideoPanned(l, cx, cy, final);
+    /// <summary>What the editor itself draws over the player's picture (captions, pictures, frames - and the layers during a drag), the frame only.</summary>
+    internal System.Windows.Media.Imaging.BitmapSource? TestLayerPicture()
+    {
+        if (_ov == null) return null;
+        var el = _ov.EditLayer;
+        int w = (int)Math.Ceiling(el.ActualWidth), h = (int)Math.Ceiling(el.ActualHeight);
+        if (w < 2 || h < 2 || _canvas.Width < 2 || _canvas.Height < 2) return null;
+        el.UpdateLayout(); // what was asked to be drawn is drawn now
+        var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
+        rtb.Render(el);
+        var area = new Int32Rect((int)_canvas.X, (int)_canvas.Y, Math.Min(w - (int)_canvas.X, (int)_canvas.Width), Math.Min(h - (int)_canvas.Y, (int)_canvas.Height));
+        var crop = new System.Windows.Media.Imaging.CroppedBitmap(rtb, area);
+        crop.Freeze();
+        return crop;
+    }
     internal void TestOpenEmoji()
     {
         if (_sel is not TextOverlay) AddText();
@@ -1331,6 +1842,8 @@ public partial class VideoEditor : UserControl
             case Key.Y when ctrl: Redo(); return true;
             case Key.Z when ctrl: Undo(); return true;
             case Key.T when !ctrl && !_p.IsAudioOnly: AddText(); return true;
+            case Key.I when !ctrl && !_p.IsAudioOnly: AddImage(null); return true;
+            case Key.D when ctrl: DuplicateSelection(); return true;
             case Key.E when !ctrl: Cancel_Click(this, new RoutedEventArgs()); return true;
             case Key.K:
             case Key.MediaPlayPause: TogglePlay(); return true;

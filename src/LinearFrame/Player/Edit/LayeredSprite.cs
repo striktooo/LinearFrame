@@ -67,12 +67,18 @@ internal sealed class LayeredSprite : IDisposable
         // owned by the player: it stays above the player and goes with it (minimise, other windows on top)
         _hwnd = CreateWindowEx(ex, ClassName, ClassName, Native.WS_POPUP, -32000, -32000, 1, 1, owner, IntPtr.Zero, Native.GetModuleHandle(null), IntPtr.Zero);
         if (_hwnd == IntPtr.Zero) Log.Warn($"Banner window not created ({Marshal.GetLastWin32Error()})");
+        else if (AppPaths.Ghost) Native.SetCloak(_hwnd, true); // a test copy that must not be seen: this window is not WPF's, nobody else hides it
     }
 
     public IntPtr Handle => _hwnd;
+    /// <summary>A frame is being shown.</summary>
+    public bool Visible => _visible;
 
-    /// <summary>Shows a frame at screen position (x, y) in physical pixels, just below the window <paramref name="below"/>.</summary>
-    public void Show(byte[] frame, int w, int h, int x, int y, IntPtr below)
+    /// <summary>
+    /// Shows a frame at screen position (x, y) in physical pixels, right above the window <paramref name="over"/>
+    /// (the editor's layer with captions and pictures: the banner is the top layer of an edit).
+    /// </summary>
+    public void Show(byte[] frame, int w, int h, int x, int y, IntPtr over)
     {
         if (_hwnd == IntPtr.Zero) return;
         if (ReferenceEquals(frame, _last) && x == _lx && y == _ly && _visible) return; // nothing changed
@@ -95,7 +101,8 @@ internal sealed class LayeredSprite : IDisposable
         {
             Native.ShowWindow(_hwnd, Native.SW_SHOWNOACTIVATE);
             _visible = true;
-            if (below != IntPtr.Zero) Native.SetWindowPos(_hwnd, below, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            // the other window goes right behind this one - wherever in the stack of windows this one has just been put
+            if (over != IntPtr.Zero) Native.SetWindowPos(over, _hwnd, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
 

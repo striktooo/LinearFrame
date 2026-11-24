@@ -5,7 +5,11 @@ JAK URUCHOMIĆ
   1. Rozpakuj cały folder (np. do Dokumentów albo C:\Programy\LinearFrame).
   2. Uruchom LinearFrame.exe. Instalacja nie jest potrzebna.
   3. Jeśli Windows pokaże „System Windows ochronił ten komputer”, kliknij „Więcej informacji” → „Uruchom mimo to”
-     (aplikacja nie ma płatnego certyfikatu podpisu — to normalne dla darmowych projektów open source).
+     (aplikacja nie ma jeszcze podpisu cyfrowego — to normalne dla darmowych projektów open source). To okno pojawia
+     się tylko raz; aktualizacje instalują się same.
+     Jeśli aplikacja włącza się na chwilę i znika bez żadnego okna, na komputerze działa „Inteligentna kontrola
+     aplikacji”, która blokuje programy bez podpisu — szczegóły w sekcji „Pobieranie” na stronie projektu:
+     https://github.com/striktooo/LinearFrame/blob/main/README.pl.md
 
 Aplikacja działa w tle. Jej ikonka siedzi w zasobniku obok zegara (na Windows 11 czasem pod strzałką „^” —
 możesz ją przeciągnąć na pasek, żeby była zawsze widoczna). Startuje sama od razu po zalogowaniu do Windows
@@ -36,8 +40,19 @@ ODTWARZACZ
   Muzyka od razu pokazuje cały utwór jako waveform — kliknij albo przeciągnij po nim, żeby przeskoczyć.
   Spacja — pauza, ←/→ — 5 s, F — pełny ekran, Ctrl+C — kopiuj klatkę, E albo nożyczki na pasku — edytor wideo:
     Podziel (S) i Usuń — wycinasz dowolnie wiele fragmentów; Połącz — doklejasz kolejny film;
-    Tekst (T) — napisy czcionką TikToka (obrys / tło / bez), kolory, rozmiar, przeciąganie po filmie;
+    Tekst (T) — napisy czcionką TikToka (obrys / tło / bez), rozmiar, przeciąganie po filmie;
+      kolor: biały, czarny albo kolorowe kółko — paleta ze wszystkimi kolorami i ostatnio używanymi pod spodem;
+      zaznacz kawałek tekstu i wybierz kolor — pokoloruje się tylko zaznaczenie; „Aa” — własna czcionka (import plików .ttf / .otf);
       buźka obok napisu — galeria emotek z iPhone'a (pobierana raz), ostatnio używane i wyszukiwarka;
+    Warstwy — zduplikuj film (Format → przycisk kopii albo Ctrl+D, gdy nic nie jest zaznaczone): ten sam film jeszcze raz,
+      we własnej ramce i z własnym przybliżeniem, np. kamerka ze streama na górnej połowie klipu 9:16, gra na dolnej.
+      Kółko myszy przybliża w miejscu kursora (do 24×), przeciąganie przesuwa film w ramce,
+      uchwyty ramki zmieniają jej kształt, gałka pod górną krawędzią przesuwa całą warstwę. Kliknięcie w sam film zaznacza jego.
+    Zdjęcie (I) — zdjęcie / logo na filmie: przesuwanie, rozmiar, czas trwania na osi czasu;
+    Duplikuj (Ctrl+D) i Lustro — przyciski obok kosza: Duplikuj powiela to, co zaznaczone (warstwę, zdjęcie, napis, emotkę),
+      Lustro odbija warstwę, sam film, zdjęcie albo emotkę;
+    Kolejność: pasy na osi czasu to stos — górny pas jest na wierzchu (baner zawsze na samej górze, warstwy wideo na dole);
+      pasek przeciągnięty w górę albo w dół zmienia kolejność;
     Baner — Twój baner (film z przezroczystością, np. .mov) w miejscu znacznika: film staje 0,7 s po jego wejściu i rusza 0,4 s przed końcem;
     Format — 9:16, 1:1, 4:5, 16:9, dopasuj / wypełnij, powiększenie, tło rozmyte albo czarne, rozdzielczość.
     Potem „Zapisz jako nowy klip” albo „Zastąp oryginał” (oryginał trafia do Kosza). Samo cięcie = bez utraty jakości,
@@ -50,7 +65,7 @@ ZDJĘCIA
   Tekst na żywo: tekst na zdjęciu zaznaczasz myszką i kopiujesz (Ctrl+C), przycisk z tekstem kopiuje wszystko,
   kod QR na zdjęciu dostaje przycisk z linkiem. Zdjęcia (etykiety, kartki pod kątem, pionowe numery) czyta PaddleOCR
   razem z OCR Windows.
-  Edytor zdjęć: narzędzie Tekst (T) to te same napisy co w edytorze wideo (TikTok Sans, obrys/tło, kolory, emotki);
+  Edytor zdjęć: narzędzie Tekst (T) to te same napisy co w edytorze wideo (TikTok Sans, obrys/tło, biały / czarny / paleta, emotki);
   róg napisu zmienia rozmiar, a linijki zostają takie, jak je napisałeś. Ctrl+kółko powiększa tam, gdzie jest kursor.
 
 AKTUALIZACJE

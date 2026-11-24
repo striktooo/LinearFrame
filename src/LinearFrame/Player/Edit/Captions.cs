@@ -23,6 +23,83 @@ public interface ICaption
     /// 0 = the canvas's caption width at the current size.
     /// </summary>
     double WrapEm { get; }
+    /// <summary>Parts of the text in a colour of their own (the rest has <see cref="Color"/>).</summary>
+    IReadOnlyList<ColorSpan> Spans { get; }
+    /// <summary>An imported font (<see cref="FontBook"/>); null = TikTok Sans.</summary>
+    string? Font { get; }
+}
+
+/// <summary>A stretch of a caption's text (UTF-16 positions) in its own colour.</summary>
+public readonly record struct ColorSpan(int Start, int Length, Color Color)
+{
+    public int End => Start + Length;
+}
+
+/// <summary>Colour spans are never changed in place: painting or typing gives a new list (undo keeps the old one).</summary>
+public static class ColorSpans
+{
+    public static Color? At(IReadOnlyList<ColorSpan>? spans, int index)
+    {
+        if (spans == null) return null;
+        for (int i = 0; i < spans.Count; i++)
+            if (index >= spans[i].Start && index < spans[i].End) return spans[i].Color;
+        return null;
+    }
+
+    /// <summary>The spans with <paramref name="start"/>..+<paramref name="length"/> painted (what was there before makes way).</summary>
+    public static IReadOnlyList<ColorSpan> Paint(IReadOnlyList<ColorSpan> spans, int start, int length, Color color)
+    {
+        if (length <= 0) return spans;
+        int end = start + length;
+        var list = new List<ColorSpan>();
+        foreach (var s in spans)
+        {
+            if (s.End <= start || s.Start >= end) { list.Add(s); continue; }
+            if (s.Start < start) list.Add(new ColorSpan(s.Start, start - s.Start, s.Color));
+            if (s.End > end) list.Add(new ColorSpan(end, s.End - end, s.Color));
+        }
+        list.Add(new ColorSpan(start, length, color));
+        return Tidy(list);
+    }
+
+    /// <summary>
+    /// The spans after the text changed (typed, deleted, pasted, an emoji put in): what is before the change stays, what
+    /// is after it moves along, a coloured word typed into grows, and text put right before or after one is plain.
+    /// </summary>
+    public static IReadOnlyList<ColorSpan> Rebase(IReadOnlyList<ColorSpan> spans, string oldText, string newText)
+    {
+        if (spans.Count == 0 || oldText == newText) return spans;
+        int max = Math.Min(oldText.Length, newText.Length), p = 0;
+        while (p < max && oldText[p] == newText[p]) p++;
+        int s = 0;
+        while (s < max - p && oldText[oldText.Length - 1 - s] == newText[newText.Length - 1 - s]) s++;
+        int r0 = p, r1 = oldText.Length - s, added = newText.Length - p - s, delta = added - (r1 - r0);
+        var list = new List<ColorSpan>();
+        foreach (var sp in spans)
+        {
+            int a = sp.Start < r0 ? sp.Start : sp.Start >= r1 ? sp.Start + delta : r0 + added;
+            int b = sp.End <= r0 ? sp.End : sp.End >= r1 ? sp.End + delta : r0;
+            a = Math.Clamp(a, 0, newText.Length);
+            b = Math.Clamp(b, 0, newText.Length);
+            if (b > a) list.Add(new ColorSpan(a, b - a, sp.Color));
+        }
+        return Tidy(list);
+    }
+
+    private static IReadOnlyList<ColorSpan> Tidy(List<ColorSpan> list)
+    {
+        list.Sort((x, y) => x.Start.CompareTo(y.Start));
+        for (int i = list.Count - 1; i > 0; i--)
+            if (list[i - 1].End == list[i].Start && list[i - 1].Color == list[i].Color)
+            {
+                list[i - 1] = new ColorSpan(list[i - 1].Start, list[i - 1].Length + list[i].Length, list[i].Color);
+                list.RemoveAt(i);
+            }
+        return list.Count == 0 ? Array.Empty<ColorSpan>() : list;
+    }
+
+    public static string Key(IReadOnlyList<ColorSpan>? spans) =>
+        spans == null || spans.Count == 0 ? "" : string.Join(';', spans.Select(s => $"{s.Start},{s.Length},{s.Color}"));
 }
 
 /// <summary>
@@ -32,18 +109,9 @@ public interface ICaption
 /// </summary>
 public static class Captions
 {
-    /// <summary>TikTok's text colours.</summary>
-    public static readonly Color[] Palette =
-    {
-        Colors.White, Colors.Black, C("#EA403F"), C("#FF933D"), C("#F2CD46"), C("#78C25E"),
-        C("#77C8A6"), C("#3496F0"), C("#5756D4"), C("#F7D7E9"), C("#E0457A"), C("#8E8E93"),
-    };
-
     private const double EmojiBox = 1.12, EmojiAdvance = 1.20;
     private static Typeface? _face;
     private static GlyphTypeface? _glyphs;
-
-    private static Color C(string hex) => (Color)ColorConverter.ConvertFromString(hex);
 
     /// <summary>TikTok Sans SemiBold, embedded in the app (SIL Open Font License).</summary>
     public static Typeface Face
@@ -72,17 +140,28 @@ public static class Captions
         }
     }
 
-    private static (double Ascent, double Descent) Metrics(double size)
+    /// <summary>The face a caption is drawn with: its imported font, or TikTok Sans.</summary>
+    private static (Typeface Face, GlyphTypeface? Glyphs) FaceOf(ICaption t)
     {
-        _ = Face;
-        double a = (_glyphs?.Baseline ?? 0.93) * size;
-        double h = (_glyphs?.Height ?? 1.2) * size;
+        if (t.Font != null && FontBook.Find(t.Font) is { } f) return (f.Face, f.Glyphs);
+        var face = Face;
+        return (face, _glyphs);
+    }
+
+    private static (double Ascent, double Descent) Metrics(double size, GlyphTypeface? glyphs)
+    {
+        double a = (glyphs?.Baseline ?? 0.93) * size;
+        double h = (glyphs?.Height ?? 1.2) * size;
         return (a, Math.Max(0, h - a));
     }
 
+    /// <summary>Everything a caption's look depends on - one text to compare (a layout is kept as long as this stays).</summary>
+    public static string LookKey(ICaption t) =>
+        FormattableString.Invariant($"{t.Text}|{t.Style}|{t.Color}|{t.Size:0.00000}|{t.WrapEm:0.0000}|{t.Font}|{ColorSpans.Key(t.Spans)}");
+
     // ------------------------------------------------------------------ layout
 
-    internal sealed record Run(bool Emoji, string Text, double Width);
+    internal sealed record Run(bool Emoji, string Text, double Width, Color? Color = null);
     internal sealed record Line(List<Run> Runs, double Width);
 
     /// <summary>A caption laid out at a given canvas size. Coordinates are canvas pixels, relative to the caption's centre.</summary>
@@ -93,6 +172,7 @@ public static class Captions
         public Rect Bounds;
         internal ICaption Source = null!;
         internal double PixelsPerDip = 1;
+        internal Typeface Face = null!;
     }
 
     public static double MaxWidth(double cw, double ch) => cw * (cw <= ch ? 0.80 : 0.66);
@@ -110,7 +190,8 @@ public static class Captions
     {
         double size = Math.Max(4, t.Size * ch);
         bool plate = t.Style == CaptionStyle.Fill;
-        var (ascent, descent) = Metrics(size);
+        var (face, glyphs) = FaceOf(t);
+        var (ascent, descent) = Metrics(size, glyphs);
         var l = new Layout
         {
             Source = t,
@@ -121,14 +202,36 @@ public static class Captions
             PadX = plate ? 0.30 * size : 0,
             PadY = plate ? 0.08 * size : 0,
             PixelsPerDip = pixelsPerDip,
+            Face = face,
         };
         double em = t.WrapEm > 0 ? t.WrapEm : WrapEmFor(t.Size, cw, ch);
         double inner = Math.Max(1, (em - 2 * (plate ? 0.30 : 0) - 2 * (t.Style == CaptionStyle.Stroke ? 0.10 : 0)) * WrapSize);
-        foreach (var para in (string.IsNullOrEmpty(t.Text) ? " " : t.Text).Replace("\r\n", "\n").Split('\n'))
+        string raw = string.IsNullOrEmpty(t.Text) ? " " : t.Text;
+        var spans = t.Spans is { Count: > 0 } && !string.IsNullOrEmpty(t.Text) ? t.Spans : null;
+        // every word remembers where it is in the text: a part of the text in its own colour is found again after wrapping
+        var words = new List<(int At, string Text)>();
+        for (int pos = 0; ;)
         {
-            var words = para.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (words.Length == 0) { l.Lines.Add(new Line(new List<Run>(), 0)); continue; }
-            foreach (var text in Wrap(words, WrapSize, inner, pixelsPerDip)) l.Lines.Add(MakeLine(text, size, pixelsPerDip));
+            int nl = raw.IndexOf('\n', pos);
+            int end = nl < 0 ? raw.Length : nl;
+            int stop = end > pos && raw[end - 1] == '\r' ? end - 1 : end;
+            words.Clear();
+            for (int i = pos; i < stop;)
+            {
+                while (i < stop && raw[i] == ' ') i++;
+                int from = i;
+                while (i < stop && raw[i] != ' ') i++;
+                if (i > from) words.Add((from, raw.Substring(from, i - from)));
+            }
+            if (words.Count == 0) l.Lines.Add(new Line(new List<Run>(), 0));
+            else
+            {
+                var texts = words.Select(x => x.Text).ToArray();
+                foreach (var (first, count) in Wrap(texts, WrapSize, inner, pixelsPerDip, face))
+                    l.Lines.Add(MakeLine(words, first, count, size, pixelsPerDip, face, spans));
+            }
+            if (nl < 0) break;
+            pos = nl + 1;
         }
         double w = l.Lines.Max(x => x.Width) + 2 * l.PadX + 2 * l.Stroke;
         double h = l.Advance * l.Lines.Count + 2 * l.PadY + 2 * l.Stroke;
@@ -136,57 +239,84 @@ public static class Captions
         return l;
     }
 
-    private static Line MakeLine(string text, double size, double ppd)
+    private static Line MakeLine(List<(int At, string Text)> words, int first, int count, double size, double ppd, Typeface face, IReadOnlyList<ColorSpan>? spans)
     {
+        // the line as it is drawn (words with one space between them) and, for every character, where it is in the text
+        var sb = new StringBuilder();
+        var src = new List<int>();
+        for (int k = first; k < first + count; k++)
+        {
+            if (k > first) { sb.Append(' '); src.Add(words[k].At - 1); }
+            sb.Append(words[k].Text);
+            for (int c = 0; c < words[k].Text.Length; c++) src.Add(words[k].At + c);
+        }
         var runs = new List<Run>();
-        foreach (var (emoji, piece) in SplitRuns(text))
+        int at = 0;
+        foreach (var (emoji, piece) in SplitRuns(sb.ToString()))
         {
             if (emoji)
                 foreach (var cluster in AppleEmoji.Clusters(piece)) runs.Add(new Run(true, cluster, EmojiAdvance * size));
+            else if (spans == null) runs.Add(new Run(false, piece, Measure(piece, size, ppd, face)));
             else
-                runs.Add(new Run(false, piece, Measure(piece, size, ppd)));
+            {
+                // one run per colour
+                int from = 0;
+                Color? cur = ColorSpans.At(spans, src[at]);
+                for (int c = 1; c <= piece.Length; c++)
+                {
+                    Color? col = c < piece.Length ? ColorSpans.At(spans, src[at + c]) : null;
+                    if (c < piece.Length && (col == cur || char.IsLowSurrogate(piece[c]))) continue;
+                    string part = piece.Substring(from, c - from);
+                    runs.Add(new Run(false, part, Measure(part, size, ppd, face), cur));
+                    from = c;
+                    cur = col;
+                }
+            }
+            at += piece.Length;
         }
         return new Line(runs, runs.Sum(r => r.Width));
     }
 
-    private static FormattedText Text(string s, double size, double ppd, Brush? brush = null) =>
-        new(s, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, Face, size, brush ?? Brushes.White, null, TextFormattingMode.Ideal, ppd);
+    private static FormattedText Text(string s, double size, double ppd, Typeface face, Brush? brush = null) =>
+        new(s, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, face, size, brush ?? Brushes.White, null, TextFormattingMode.Ideal, ppd);
 
-    private static double Measure(string s, double size, double ppd) => s.Length == 0 ? 0 : Text(s, size, ppd).WidthIncludingTrailingWhitespace;
+    private static double Measure(string s, double size, double ppd, Typeface face) => s.Length == 0 ? 0 : Text(s, size, ppd, face).WidthIncludingTrailingWhitespace;
 
-    private static double MeasureMixed(string s, double size, double ppd)
+    private static double MeasureMixed(string s, double size, double ppd, Typeface face)
     {
         double w = 0;
         foreach (var (emoji, piece) in SplitRuns(s))
-            w += emoji ? AppleEmoji.Clusters(piece).Count() * EmojiAdvance * size : Measure(piece, size, ppd);
+            w += emoji ? AppleEmoji.Clusters(piece).Count() * EmojiAdvance * size : Measure(piece, size, ppd, face);
         return w;
     }
 
-    private static List<string> Greedy(string[] words, double size, double maxW, double ppd)
+    /// <summary>Lines as stretches of words (first word, how many).</summary>
+    private static List<(int First, int Count)> Greedy(string[] words, double size, double maxW, double ppd, Typeface face)
     {
-        var lines = new List<string>();
+        var lines = new List<(int, int)>();
         string cur = "";
-        foreach (var w in words)
+        int first = 0;
+        for (int i = 0; i < words.Length; i++)
         {
-            string cand = cur.Length == 0 ? w : cur + " " + w;
-            if (cur.Length > 0 && MeasureMixed(cand, size, ppd) > maxW) { lines.Add(cur); cur = w; }
+            string cand = cur.Length == 0 ? words[i] : cur + " " + words[i];
+            if (cur.Length > 0 && MeasureMixed(cand, size, ppd, face) > maxW) { lines.Add((first, i - first)); first = i; cur = words[i]; }
             else cur = cand;
         }
-        if (cur.Length > 0) lines.Add(cur);
+        if (cur.Length > 0) lines.Add((first, words.Length - first));
         return lines;
     }
 
     /// <summary>Wrapping like TikTok: as few lines as fit, with lengths evened out (no long line over a stub).</summary>
-    private static List<string> Wrap(string[] words, double size, double maxW, double ppd)
+    private static List<(int First, int Count)> Wrap(string[] words, double size, double maxW, double ppd, Typeface face)
     {
-        var lines = Greedy(words, size, maxW, ppd);
+        var lines = Greedy(words, size, maxW, ppd, face);
         if (lines.Count <= 1) return lines;
-        double lo = MeasureMixed(string.Join(' ', words), size, ppd) / lines.Count, hi = maxW;
+        double lo = MeasureMixed(string.Join(' ', words), size, ppd, face) / lines.Count, hi = maxW;
         var best = lines;
         for (int i = 0; i < 12; i++)
         {
             double mid = (lo + hi) / 2;
-            var cand = Greedy(words, size, mid, ppd);
+            var cand = Greedy(words, size, mid, ppd, face);
             if (cand.Count <= lines.Count) { best = cand; hi = mid; } else lo = mid;
         }
         return best;
@@ -251,7 +381,10 @@ public static class Captions
             textColor = lum > 160 ? Colors.Black : Colors.White;
         }
 
+        // all letters together get the outline; then each colour is filled (most captions have just the one)
         var glyphs = new GeometryGroup { FillRule = FillRule.Nonzero };
+        var plain = new GeometryGroup { FillRule = FillRule.Nonzero };
+        Dictionary<Color, GeometryGroup>? tinted = null;
         var emojis = new List<(string Cluster, Rect Box)>();
         for (int i = 0; i < n; i++)
         {
@@ -267,8 +400,16 @@ public static class Captions
                 }
                 else
                 {
-                    var ft = Text(run.Text, l.Size, l.PixelsPerDip);
-                    glyphs.Children.Add(ft.BuildGeometry(new Point(x, baseline - ft.Baseline)));
+                    var ft = Text(run.Text, l.Size, l.PixelsPerDip, l.Face);
+                    var geo = ft.BuildGeometry(new Point(x, baseline - ft.Baseline));
+                    glyphs.Children.Add(geo);
+                    if (run.Color is Color own && own != textColor)
+                    {
+                        tinted ??= new();
+                        if (!tinted.TryGetValue(own, out var group)) tinted[own] = group = new GeometryGroup { FillRule = FillRule.Nonzero };
+                        group.Children.Add(geo);
+                    }
+                    else plain.Children.Add(geo);
                 }
                 x += run.Width;
             }
@@ -282,7 +423,16 @@ public static class Captions
         }
         var fill = new SolidColorBrush(textColor);
         fill.Freeze();
-        dc.DrawGeometry(fill, null, glyphs);
+        plain.Freeze();
+        dc.DrawGeometry(fill, null, plain);
+        if (tinted != null)
+            foreach (var (color, group) in tinted)
+            {
+                var brush = new SolidColorBrush(color);
+                brush.Freeze();
+                group.Freeze();
+                dc.DrawGeometry(brush, null, group);
+            }
         foreach (var (cluster, box) in emojis)
         {
             var img = AppleEmoji.ImageForText(cluster);

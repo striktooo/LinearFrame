@@ -82,6 +82,8 @@ public static class Icons
         Add("banner", "M5,6.5 H19 A2,2 0 0 1 21,8.5 V15.5 A2,2 0 0 1 19,17.5 H5 A2,2 0 0 1 3,15.5 V8.5 A2,2 0 0 1 5,6.5 Z",
             "M12,8.6 L12.95,11.05 L15.4,12 L12.95,12.95 L12,15.4 L11.05,12.95 L8.6,12 L11.05,11.05 Z");
         Add("aspect", "M5,5 H19 A2,2 0 0 1 21,7 V17 A2,2 0 0 1 19,19 H5 A2,2 0 0 1 3,17 V7 A2,2 0 0 1 5,5 Z M7,11 V8.5 H9.5 M17,13 V15.5 H14.5");
+        // a picture mirrored at a line
+        Add("flip", "M12,3.5 V20.5 M9,7 L4,12 L9,17 Z M15,7 L20,12 L15,17 Z", "M15,7 L20,12 L15,17 Z");
     }
 
     private static void Add(string name, string? stroke, string? fill = null)

@@ -42,17 +42,26 @@
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <TextBox x:Name="TextEdit" Style="{StaticResource DarkBox}" VerticalAlignment="Center"
+            <!-- the selection stays marked while a colour is picked: only what is selected takes that colour -->
+            <TextBox x:Name="TextEdit" Style="{StaticResource DarkBox}" VerticalAlignment="Center" IsInactiveSelectionHighlightEnabled="True"
                      AcceptsReturn="False" TextChanged="TextEdit_TextChanged" PreviewKeyDown="TextEdit_PreviewKeyDown"/>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="10,0,0,0" VerticalAlignment="Center">
                 <Button x:Name="EmojiBtn" Style="{StaticResource Hud.IconButton}" Click="Emoji_Click" ToolTip="{core:Loc Edit.EmojiTip}">
                     <ui:IconView Icon="smile" Width="19" Height="19"/>
                 </Button>
+                <Button x:Name="DuplicateBtn" Style="{StaticResource Hud.IconButton}" Click="Duplicate_Click" ToolTip="{core:Loc Edit.Duplicate}" Visibility="Collapsed"><ui:IconView Icon="copy" Width="17" Height="17"/></Button>
                 <Button Style="{StaticResource Hud.IconButton}" Click="Delete_Click" ToolTip="{core:Loc Edit.DeleteTip}"><ui:IconView Icon="trash" Width="17" Height="17"/></Button>
                 <Button Style="{StaticResource Hud.Yellow}" Content="{core:Loc Edit.Done}" Click="Done_Click" Margin="6,0,0,0"/>
             </StackPanel>
         </Grid>
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <!-- the font: TikTok Sans, or one of your own (the menu imports font files) -->
+            <Button x:Name="FontBtn" Style="{StaticResource Hud.Button}" Background="#2C2C2E" Click="Font_Click" Padding="9,4" Margin="0,0,10,0" VerticalAlignment="Center">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="Aa" FontWeight="SemiBold"/>
+                    <ui:IconView Icon="chevron-down" Width="11" Height="11" Margin="4,1,0,0" Foreground="#A1A1A6"/>
+                </StackPanel>
+            </Button>
             <Border Background="#2C2C2E" CornerRadius="8" Padding="2" VerticalAlignment="Center">
                 <StackPanel Orientation="Horizontal">
                     <RadioButton x:Name="StyleStroke" Style="{StaticResource HudSegment.Item}" GroupName="capstyle" Content="{core:Loc Edit.StyleStroke}" Checked="Style_Checked" Tag="Stroke"/>
@@ -71,6 +80,12 @@
         <Popup x:Name="EmojiPopup" PlacementTarget="{Binding ElementName=EmojiBtn}" Placement="Top" StaysOpen="False"
                AllowsTransparency="True" PopupAnimation="Fade" VerticalOffset="-8" HorizontalOffset="-330">
             <ed:EmojiPicker x:Name="Picker" Margin="12"/>
+        </Popup>
+
+        <!-- the full palette behind the third colour dot: every colour, and the ones used lately (where it opens: PlacePalette) -->
+        <Popup x:Name="ColorPopup" PlacementTarget="{Binding ElementName=Swatches}" Placement="Custom" StaysOpen="False"
+               AllowsTransparency="True" PopupAnimation="Fade">
+            <ed:ColorPickerPanel x:Name="Palette" Margin="14"/>
         </Popup>
     </Grid>
 </UserControl>

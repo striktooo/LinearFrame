@@ -117,17 +117,22 @@ internal static class Ffmpeg
     // player started two of them before it could show itself). So each of these begins on a worker thread.
 
     /// <summary>One video frame near <paramref name="t"/> (keyframe-fast), scaled to the given height.</summary>
-    public static Task<BitmapSource?> Frame(string file, double t, int height, CancellationToken ct) =>
-        Task.Run(() => FrameCore(file, t, height, ct), ct);
+    /// <summary>
+    /// One frame of a video as a picture. <paramref name="matrix"/> (bt709 / bt601 / bt2020): how the colours of a file
+    /// that does not say are to be read - the player guesses by the picture's size, FFmpeg always takes the old
+    /// standard; a frame shown next to the player's own picture has to be read the player's way.
+    /// </summary>
+    public static Task<BitmapSource?> Frame(string file, double t, int height, CancellationToken ct, string? matrix = null) =>
+        Task.Run(() => FrameCore(file, t, height, ct, matrix), ct);
 
-    private static async Task<BitmapSource?> FrameCore(string file, double t, int height, CancellationToken ct)
+    private static async Task<BitmapSource?> FrameCore(string file, double t, int height, CancellationToken ct, string? matrix)
     {
         var args = new List<string>
         {
             "-hide_banner", "-loglevel", "error", "-nostdin",
             "-ss", F(Math.Max(0, t)), "-i", file,
             "-frames:v", "1", "-an", "-sn", "-dn",
-            "-vf", $"scale=-2:{height}:flags=bilinear",
+            "-vf", $"scale=-2:{height}:flags=bilinear{(matrix != null ? ":in_color_matrix=" + matrix : "")}",
             "-f", "image2pipe", "-c:v", "bmp", "pipe:1",
         };
         return Decode(await RunForBytes(args, ct, 10000));

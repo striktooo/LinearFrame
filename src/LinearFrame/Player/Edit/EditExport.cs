@@ -191,14 +191,14 @@ internal static class EditExport
                 int k = next++;
                 inputs.AddRange(new[] { "-ss", N(at / fps), "-i", clip.Path });
                 g.Append(CultureInfo.InvariantCulture, $"[{k}:v]setpts=PTS-STARTPTS,fps={fpsText},format=yuv420p,trim=end_frame=1,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop={frames - 1}[t{i}];\n");
-                Frame(p, clip, W, H, $"t{i}", $"p{i}v", i, g);
+                EditGraph.Compose(p, clip, W, H, $"t{i}", $"p{i}v", $"f{i}", g, EditGraph.PartsFor(p, pc.F0, pc.F1, fps), preview: false);
             }
             else if (vLabels.TryGetValue(pc.Clip, out var vq))
             {
                 int a = (int)Math.Round(pc.SrcIn * fps), b = Math.Max(a + 1, (int)Math.Round(pc.SrcOut * fps));
                 frames = b - a;
                 g.Append(CultureInfo.InvariantCulture, $"[{vq.Dequeue()}]trim=start_frame={a}:end_frame={b},setpts=PTS-STARTPTS[t{i}];\n");
-                Frame(p, clip, W, H, $"t{i}", $"p{i}v", i, g);
+                EditGraph.Compose(p, clip, W, H, $"t{i}", $"p{i}v", $"f{i}", g, EditGraph.PartsFor(p, pc.F0, pc.F1, fps), preview: false);
             }
             else
             {
@@ -222,8 +222,61 @@ internal static class EditExport
         }
         g.Append(concat).Append($"concat=n={pieces.Count}:v=1:a={(anyAudio ? 1 : 0)}[base]" + (anyAudio ? "[aorig]" : "") + ";\n");
 
-        // ---- banners (under the captions), each shifted to its moment
+        // The order of what lies on the video, bottom to top: the video and its layers (the pieces above), pictures and
+        // captions in the order of the list, the banners on top of everything.
         string cur = "base";
+
+        // ---- captions, pictures and emoji: pictures from the same drawing code as the preview
+        int pic = 0;
+        foreach (var o in p.Overlays)
+        {
+            if (o is BannerOverlay or VideoLayer) continue;
+            var (f0, f1) = p.Span(o);
+            if (f1 - f0 < 0.02) continue;
+            BitmapSource? img;
+            Rect bounds;
+            if (o is TextOverlay t)
+            {
+                if (string.IsNullOrWhiteSpace(t.Text)) continue;
+                await PreloadEmoji(t.Text);
+                img = Captions.Render(t, W, H, out bounds);
+            }
+            else if (o is EmojiOverlay e)
+            {
+                var src = await AppleEmoji.ImageAsync(e.Unified);
+                if (src == null) continue;
+                int s = Even(e.Size * H);
+                img = ImageOps.Resize(PixelBuffer.FromBitmap(src), s, s).ToBitmap(); // Lanczos from Apple's 64 px picture
+                bounds = new Rect(-s / 2.0, -s / 2.0, s, s);
+            }
+            else if (o is ImageOverlay im)
+            {
+                // every pixel of the picture, resampled once to the size it has in the frame
+                var path = im.Path;
+                var src = await Task.Run(() => EditImages.Full(path));
+                if (src == null) continue;
+                int ih = Math.Clamp((int)Math.Round(im.Size * H), 2, 8 * H), iw = Math.Clamp((int)Math.Round(ih * im.Aspect), 2, 8 * W);
+                img = ImageOps.Resize(PixelBuffer.FromBitmap(src), iw, ih).ToBitmap();
+                bounds = new Rect(-iw / 2.0, -ih / 2.0, iw, ih);
+            }
+            else continue;
+            if (o.Flip)
+            {
+                var mirrored = new TransformedBitmap(img, new ScaleTransform(-1, 1));
+                mirrored.Freeze();
+                img = mirrored;
+            }
+            var file = Path.Combine(temp, $"overlay{pic}.png");
+            await File.WriteAllBytesAsync(file, ImageIO.EncodePng(img));
+            int k = next++;
+            inputs.AddRange(new[] { "-i", file });
+            int x = (int)Math.Round(o.X * W + bounds.X), y = (int)Math.Round(o.Y * H + bounds.Y);
+            g.Append(CultureInfo.InvariantCulture, $"[{cur}][{k}:v]overlay=x={x}:y={y}:format=auto:enable='between(t,{N(f0)},{N(f1 - 0.5 / fps)})'[oc{pic}];\n");
+            cur = $"oc{pic}";
+            pic++;
+        }
+
+        // ---- banners (the top layer), each shifted to its moment
         int step = 0;
         var bannerAudio = new List<string>();
         foreach (var b in p.Overlays.OfType<BannerOverlay>())
@@ -245,40 +298,6 @@ internal static class EditExport
             }
             step++;
         }
-
-        // ---- captions and emoji: pictures from the same drawing code as the preview
-        int pic = 0;
-        foreach (var o in p.Overlays)
-        {
-            if (o is BannerOverlay) continue;
-            var (f0, f1) = p.Span(o);
-            if (f1 - f0 < 0.02) continue;
-            BitmapSource? img;
-            Rect bounds;
-            if (o is TextOverlay t)
-            {
-                if (string.IsNullOrWhiteSpace(t.Text)) continue;
-                await PreloadEmoji(t.Text);
-                img = Captions.Render(t, W, H, out bounds);
-            }
-            else if (o is EmojiOverlay e)
-            {
-                var src = await AppleEmoji.ImageAsync(e.Unified);
-                if (src == null) continue;
-                int s = Even(e.Size * H);
-                img = ImageOps.Resize(PixelBuffer.FromBitmap(src), s, s).ToBitmap(); // Lanczos from Apple's 64 px picture
-                bounds = new Rect(-s / 2.0, -s / 2.0, s, s);
-            }
-            else continue;
-            var file = Path.Combine(temp, $"overlay{pic}.png");
-            await File.WriteAllBytesAsync(file, ImageIO.EncodePng(img));
-            int k = next++;
-            inputs.AddRange(new[] { "-i", file });
-            int x = (int)Math.Round(o.X * W + bounds.X), y = (int)Math.Round(o.Y * H + bounds.Y);
-            g.Append(CultureInfo.InvariantCulture, $"[{cur}][{k}:v]overlay=x={x}:y={y}:format=auto:enable='between(t,{N(f0)},{N(f1 - 0.5 / fps)})'[oc{pic}];\n");
-            cur = $"oc{pic}";
-            pic++;
-        }
         g.Append(CultureInfo.InvariantCulture, $"[{cur}]format=yuv420p,setsar=1[vout]");
 
         if (anyAudio)
@@ -288,36 +307,6 @@ internal static class EditExport
             else g.Append(CultureInfo.InvariantCulture, $"[aorig]{string.Concat(bannerAudio)}amix=inputs={1 + bannerAudio.Count}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=false[aout]");
         }
         return (g.ToString(), inputs, total, anyAudio);
-    }
-
-    /// <summary>A clip's picture onto the canvas: zoomed, moved, and on black or on a blurred copy of itself.</summary>
-    private static void Frame(EditProject p, EditClip clip, int W, int H, string input, string output, int i, StringBuilder g)
-    {
-        var r = p.VideoRect(clip, W, H);
-        int vw = Even(r.Width), vh = Even(r.Height);
-        int x = (int)Math.Round(r.X), y = (int)Math.Round(r.Y);
-        bool covers = x <= 0 && y <= 0 && x + vw >= W && y + vh >= H;
-        bool inside = x >= 0 && y >= 0 && x + vw <= W && y + vh <= H;
-        if (covers)
-        {
-            if (vw == W && vh == H) g.Append(CultureInfo.InvariantCulture, $"[{input}]scale={W}:{H}:flags=bicubic,setsar=1[{output}];\n");
-            else g.Append(CultureInfo.InvariantCulture, $"[{input}]scale={vw}:{vh}:flags=bicubic,crop={W}:{H}:{-x}:{-y},setsar=1[{output}];\n");
-        }
-        else if (inside && p.Canvas.Background == CanvasBackground.Black)
-            g.Append(CultureInfo.InvariantCulture, $"[{input}]scale={vw}:{vh}:flags=bicubic,pad={W}:{H}:{x}:{y}:black,setsar=1[{output}];\n");
-        else
-        {
-            g.Append(CultureInfo.InvariantCulture, $"[{input}]split[f{i}a][f{i}b];\n");
-            if (p.Canvas.Background == CanvasBackground.Blur)
-            {
-                // blur a small copy (cheap) and blow it up: the same look as a big blur, a fraction of the work
-                int sw = Even(W / 8.0), sh = Even(H / 8.0);
-                g.Append(CultureInfo.InvariantCulture, $"[f{i}a]scale={sw}:{sh}:force_original_aspect_ratio=increase:flags=bilinear,crop={sw}:{sh},gblur=sigma=5,scale={W}:{H}:flags=bilinear,eq=brightness=-0.06[f{i}g];\n");
-            }
-            else g.Append(CultureInfo.InvariantCulture, $"[f{i}a]scale={W}:{H},drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[f{i}g];\n");
-            g.Append(CultureInfo.InvariantCulture, $"[f{i}b]scale={vw}:{vh}:flags=bicubic[f{i}s];\n");
-            g.Append(CultureInfo.InvariantCulture, $"[f{i}g][f{i}s]overlay=x={x}:y={y}:format=auto,setsar=1[{output}];\n");
-        }
     }
 
     private static async Task PreloadEmoji(string text)

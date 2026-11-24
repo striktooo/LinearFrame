@@ -63,8 +63,8 @@ Wszystko to zasłania zamrożona nakładka; Twój prawdziwy monitor, jego rozdzi
 ![Edytor](docs/images/editor.png)
 
 Strzałki, zakreślacz, pióro, tekst, numerowane kroki i **zamazywanie** prywatnych rzeczy.
-**Tekst** to te same napisy co w edytorze wideo: TikTok Sans z obrysem, tłem albo bez, kolory TikToka i emotki z iPhone'a;
-rozmiar zmieniasz za róg — linijki zostają takie, jak je napisałeś.
+**Tekst** to te same napisy co w edytorze wideo: TikTok Sans z obrysem, tłem albo bez, biały, czarny albo dowolny kolor
+z palety i emotki z iPhone'a; rozmiar zmieniasz za róg — linijki zostają takie, jak je napisałeś.
 Każdy element da się potem przesunąć, powiększyć i przemalować; cofanie bez limitu.
 
 **Kadruj i rozszerz** to coś, czego nie ma gdzie indziej: ciągniesz ramkę *na zewnątrz*, a LinearFrame rozpoznaje kolor tła
@@ -96,14 +96,30 @@ a **zdjęcia** — etykietę paczki, kartkę pod kątem, tekst na pstrokatym tle
 **PaddleOCR PP-OCRv5**: znajduje każdą linię pod dowolnym kątem, prostuje ją i czyta razem z silnikiem Windows; dla każdej linii
 wygrywa lepszy odczyt, a polskie znaki, które gubi model ze zdjęć, wracają ze słownika ortograficznego Windows.
 
-### ✂️ Edytor wideo — cięcie, napisy, emotki, baner, dowolny format
+### ✂️ Edytor wideo — cięcie, napisy, warstwy, zdjęcia, baner, dowolny format
 ![Edytor wideo](docs/images/video-editor.png)
 
 Klikasz ✂️ na pasku sterowania (albo **E**) i pod filmem otwiera się edytor z paskiem klatek i waveformem:
 
 - **Podziel** w miejscu znacznika i **Usuń** kawałki — wytniesz dowolnie wiele fragmentów. **Połącz** dokleja kolejny film na końcu.
 - **Tekst** — napisy czcionką TikToka (TikTok Sans): domyślnie biały z czarnym obrysem, albo z tłem, albo bez niczego;
-  kolory jak w TikToku, dowolny rozmiar; przeciągasz je po filmie (same łapią środek), dwuklik = edycja tekstu.
+  dowolny rozmiar; przeciągasz je po filmie (same łapią środek), dwuklik = edycja tekstu. Kolor: **biały**, **czarny** albo
+  **kolorowe kółko** — otwiera paletę ze wszystkimi kolorami, napis zmienia się razem z ruchem myszy, a pod spodem czekają
+  ostatnio używane kolory. Zaznacz najpierw kawałek tekstu, a pokoloruje się tylko zaznaczenie. **Aa** przełącza na własną
+  czcionkę: pliki `.ttf` / `.otf` importujesz raz i zostają na liście.
+- **Warstwy** — zduplikuj film (**Format** → przycisk kopii albo **Ctrl+D**, gdy nic nie jest zaznaczone), a ten sam film
+  pojawi się jeszcze raz, we własnej ramce i z własnym przybliżeniem. Ze streama 16:9 robisz klip 9:16
+  z kamerką na górnej połowie i grą na dolnej: pierwsza warstwa dzieli kadr z filmem na dwie połowy (obie wypełnione), potem
+  kółko myszy przybliża w miejscu kursora (do 24×, wystarczy na małą kamerkę w rogu), a przeciąganie przesuwa film w ramce.
+  Uchwyty ramki zmieniają, jaką część kadru zajmuje warstwa, gałka pod jej górną krawędzią przesuwa całą warstwę; ramki
+  łapią krawędzie, środek i siebie nawzajem. Każda warstwa ma swój pasek na osi czasu i może być widoczna tylko przez
+  część filmu.
+- **Zdjęcie** — wstawia na film zdjęcie (logo, mem, fotkę): przesuwasz, zmieniasz rozmiar, przycinasz jego pasek na osi czasu.
+- **Duplikuj** (Ctrl+D) robi drugi egzemplarz tego, co zaznaczone — warstwy, zdjęcia, napisu, emotki; **Odbij lustrzanie**
+  odwraca warstwę, sam film, zdjęcie albo emotkę.
+- **Pasy pod paskiem klatek to stos tego, co leży na filmie**: górny pas jest na wierzchu. Baner zawsze na samej górze, pod nim
+  napisy i zdjęcia, na dole warstwy wideo. Przeciągnij pasek w górę albo w dół, a pójdzie przed albo za pozostałe — w bok
+  przesuwa się w czasie, jak dotąd.
 - **Emotki** — buźka obok napisu otwiera prawdziwą galerię emotek z iPhone'a (grafiki Apple pobierane raz): najpierw ostatnio
   używane, do tego wyszukiwarka po polsku i angielsku („serce”, „ogień”, „fire”…). Napis z samej emotki to naklejka.
 - **Baner** — wstawia Twój baner (film z przezroczystością, np. ProRes 4444 .mov) w miejscu znacznika: film gra jeszcze 0,7 s,
@@ -112,7 +128,8 @@ Klikasz ✂️ na pasku sterowania (albo **E**) i pod filmem otwiera się edytor
 - **Format** — 9:16, 1:1, 4:5, 16:9 albo oryginał; dopasuj albo wypełnij, powiększ i przesuń film w kadrze, tło rozmyte albo
   czarne, rozdzielczość.
 
-Podgląd gra na żywo w odtwarzaczu (kadr robi karta graficzna, baner leci we własnej warstwie), wszystko z cofaniem i ponawianiem.
+Podgląd gra na żywo w odtwarzaczu (kadr robi karta graficzna, baner leci we własnej warstwie; przy warstwach wideo kadr rysuje
+ten sam graf filtrów, który potem robi plik), wszystko z cofaniem i ponawianiem.
 **Zapisz jako nowy klip** albo **Zastąp oryginał** (oryginał trafia do Kosza): samo cięcie jednego pliku jest kopiowane bit w bit
 — bez utraty jakości, w kilka sekund nawet dla 4 GB; wszystko inne jest raz renderowane do MP4 (H.264), na karcie graficznej,
 jeśli jest (NVIDIA, AMD, Intel), co do klatki, z dźwiękiem banera.
@@ -132,9 +149,39 @@ i silniki są pobierane ponownie tylko wtedy, gdy naprawdę się zmieniły.
 ## Pobieranie
 
 1. Pobierz **`LinearFrame-x.y.z-win-x64.zip`** z [**Releases**](https://github.com/striktooo/LinearFrame/releases/latest).
-2. Rozpakuj gdziekolwiek i uruchom **`LinearFrame.exe`**. Nic nie instalujesz — .NET, na którym działa, jest w folderze.
-3. Jeśli pojawi się „System Windows ochronił ten komputer” (aplikacja nie ma jeszcze certyfikatu podpisu):
-   **Więcej informacji → Uruchom mimo to**.
+2. Najpierw rozpakuj cały folder (prawy przycisk → *Wyodrębnij wszystkie*; prosto z ZIP-a aplikacja się nie uruchomi),
+   potem uruchom **`LinearFrame.exe`**. Nic nie instalujesz — .NET, na którym działa, jest w folderze.
+3. **Za pierwszym razem Windows pokaże niebieskie okno „System Windows ochronił ten komputer”. Kliknij *Więcej informacji*,
+   a potem *Uruchom mimo to*.**
+
+<img src="docs/images/first-run-pl.png" width="760" alt="Niebieskie okno Windows: 1 - Więcej informacji, 2 - Uruchom mimo to">
+
+<details>
+<summary><b>Dlaczego Windows ostrzega — i czy to bezpieczne?</b></summary>
+
+LinearFrame nie ma jeszcze podpisu cyfrowego. Filtr Microsoft Defender SmartScreen pokazuje to okno przy każdym programie
+bez podpisu, dopóki dokładnie tego pliku nie uruchomi dość dużo osób — a dla programu bez podpisu licznik zaczyna się od
+zera przy każdej wersji ([opis Microsoftu](https://learn.microsoft.com/windows/apps/package-and-deploy/smartscreen-reputation)).
+To znaczy „nie znamy jeszcze tego pliku”, a nie „znaleziono wirusa”: antywirus Defendera skanuje paczkę jak każdy pobrany
+plik i niczego nie znajduje (każde wydanie jest tak sprawdzane przed publikacją).
+
+- Okno pojawia się **raz**. Kolejne wersje instalują się same z poziomu aplikacji i już go nie pokazują.
+- Każde wydanie jest zbudowane ze źródeł z tego repozytorium, a każdy ZIP ma swoją sumę SHA-256.
+- Na komputerach z włączoną **Inteligentną kontrolą aplikacji** (wiele nowych komputerów z Windows 11) przycisku
+  *Uruchom mimo to* nie ma: Windows pozwala wystartować `LinearFrame.exe`, po czym blokuje niepodpisany plik
+  `LinearFrame.dll` i aplikacja zamyka się bez okna (w dzienniku zdarzeń: *Zasady kontroli aplikacji zablokowały ten
+  plik*, 0x800711C7). Windows nie daje wyjątku dla jednej aplikacji, więc na takim komputerze LinearFrame zadziała
+  dopiero z podpisem. Podpis cyfrowy jest w planach.
+</details>
+
+<details>
+<summary><b>Odinstalowanie</b></summary>
+
+Ustawienia → wyłącz *Uruchamiaj razem z Windows* (oraz *Zrzuty HD → Usuń sterownik*, jeśli go instalowałeś), zakończ
+aplikację (ikonka w zasobniku → *Zakończ*), usuń folder i skrót *LinearFrame* z menu Start. Jeśli LinearFrame był domyślną
+aplikacją do filmów, muzyki albo zdjęć, wybierz inną w Ustawieniach Windows → Aplikacje domyślne. Ustawienia są
+w `%APPDATA%\LinearFrame`, logi i pamięć podręczna w `%LOCALAPPDATA%\LinearFrame`, a zrzuty w `Obrazy\LinearFrame`.
+</details>
 
 Aplikacja startuje od razu po zalogowaniu do Windows — przez małe zadanie użytkownika w Harmonogramie zadań, bez uprawnień
 administratora (programy z klasycznej listy „Uruchom” Windows wstrzymuje o 20–30 s); wyłączysz to w Ustawieniach. Żeby otwierała filmy, muzykę albo zdjęcia domyślnie: *Odtwarzacz →
@@ -150,7 +197,7 @@ w klasycznym menu kontekstowym.
 | Przy zaznaczaniu | **Ctrl+C / Enter** kopiuj i zapisz · **Ctrl+C+C** dołóż do schowka · **T** kopiuj tekst · **E** edytuj · **Ctrl+S** zapisz jako · **Esc** anuluj · **strzałki** przesuń · prawy klik czyści |
 | Edytor | **V P H A T N B** narzędzia · **C** kadruj i rozszerz · **Ctrl+Z / Ctrl+Shift+Z** · **Ctrl+C** kopiuj · **Ctrl+S** gotowe |
 | Odtwarzacz | **Spacja** pauza · **← →** 5 s · **J L** 10 s · **, .** klatka · **↑ ↓** głośność · **M** wycisz · **F** pełny ekran · **Ctrl+C** kopiuj klatkę · **E** edytor wideo |
-| Edytor wideo | **Spacja** odtwórz · **← →** klatka (**Shift** 1 s) · **S** podziel · **Delete** usuń · **T** tekst · **Ctrl+Z / Ctrl+Y** · **Esc** gotowe / wyjdź |
+| Edytor wideo | **Spacja** odtwórz · **← →** klatka (**Shift** 1 s) · **S** podziel · **Delete** usuń · **T** tekst · **I** zdjęcie · **Ctrl+D** duplikuj (nic nie zaznaczone: film, jako warstwę) · **Ctrl+Z / Ctrl+Y** · **Esc** gotowe / wyjdź |
 | Zdjęcia | **← →** poprzednie / następne · **kółko** powiększenie · **dwuklik**, **0 / 1** cały obraz / rzeczywiste piksele · **Ctrl+C** kopiuj (najpierw zaznaczony tekst) · **Ctrl+A** zaznacz cały tekst · **E** edytuj · **Esc** zamknij |
 
 Wiersz poleceń: `LinearFrame.exe film.mp4` · `--trim film.mp4` · `--cut film.mp4` · `--capture` · `--settings` · `--exit`
@@ -263,6 +310,12 @@ flowchart LR
   zatrzymujący się sam na dokładnej klatce (sprawdzane w wątku zdarzeń mpv), a w tym czasie biegnie zegar.
 - Podgląd formatu: mpv rysuje tylko w tej części kadru, którą zajmuje film, a `video-zoom`/`video-pan` stawiają obraz tam,
   gdzie jest — robi to karta graficzna, więc odtwarzanie jest tak samo płynne jak bez formatu. Rozmyte tło to warstwa WPF pod spodem.
+- Warstwy wideo: kadr składa jeden graf filtrów FFmpeg (`EditGraph`) — tło (czarne albo rozmyta kopia filmu) i każda warstwa
+  wycięta z klatki, *zanim* zostanie przeskalowana (crop → scale → dokładny crop), więc kamerka przybliżona dwadzieścia razy
+  kosztuje tyle, co mały kawałek obrazu, którym jest. Ten sam graf, w rozmiarze, jaki kadr ma na ekranie, działa w mpv jako
+  filtr `lavfi` (dekoder oddaje mu klatki w pamięci) — to, co widać, to to, co się zapisze. Zatrzymany mpv potrzebuje
+  80–250 ms na każdą zmianę (dekoduje klatkę od nowa), za wolno dla ręki: podczas przeciągania warstwy edytor sam rysuje
+  warstwy z klatki spod znacznika, przy każdym ruchu myszy, a mpv dogania pod spodem.
 - Podgląd banera to przezroczyste dla myszy okno warstwowe, do którego trafiają klatki dekodowane przez FFmpeg na bieżąco,
   dokładnie w pokazywanym rozmiarze, do krótkiej kolejki (kilka klatek, niezależnie od wielkości okna).
 - **Kopia** (samo cięcie jednego pliku): jeden kawałek = `ffmpeg -ss -t -c copy` (MP4/MOV zaczynają się co do klatki dzięki
@@ -308,8 +361,11 @@ flowchart LR
 <details>
 <summary><b>Prywatność</b></summary>
 
-Bez kont, telemetrii i analityki. Jedyny ruch sieciowy to sprawdzanie aktualizacji w zakładce Releases tego repozytorium
-(i pobranie aktualizacji) — można je wyłączyć. Zrzuty nigdy nie opuszczają komputera, chyba że sam je wyślesz.
+Bez kont, telemetrii i analityki — nic o Tobie ani o Twoich plikach nie jest nigdzie wysyłane. LinearFrame łączy się
+z internetem tylko w trzech sprawach: sprawdzenie aktualizacji w zakładce Releases tego repozytorium i jej pobranie (można
+to wyłączyć); obrazki emotek, pobierane raz z jsDelivr przy pierwszym otwarciu galerii emotek; oraz sterownik wirtualnego
+ekranu, pobierany z jego repozytorium na GitHubie, gdy włączasz zrzuty HD. Zrzuty nigdy nie opuszczają komputera, chyba że
+sam je wyślesz.
 </details>
 
 ---

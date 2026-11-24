@@ -46,9 +46,23 @@ uszkodzona i czy zainstalowany silnik wideo nadal pasuje.
 
 Link: **https://github.com/striktooo/LinearFrame/releases/latest** → `LinearFrame-…-win-x64.zip` → rozpakować → `LinearFrame.exe`.
 
-Przy pierwszym uruchomieniu Windows SmartScreen może napisać „System Windows ochronił ten komputer”, bo aplikacja nie ma
-certyfikatu podpisu kodu: **Więcej informacji → Uruchom mimo to**. Ostrzeżenie słabnie z czasem, gdy więcej osób pobiera plik.
-Darmowy podpis dla projektów open source oferuje [SignPath Foundation](https://signpath.org) — opcja na później.
+Przy pierwszym uruchomieniu Windows pokaże niebieskie okno „System Windows ochronił ten komputer”, bo aplikacja nie ma
+podpisu cyfrowego: **Więcej informacji → Uruchom mimo to** (obrazek: `docs/images/first-run-pl.png`, rysuje go
+`scripts/first-run-picture.ps1`). Okno pojawia się raz — aktualizacje instalują się już bez niego. To nie jest wykrycie
+wirusa: antywirus Defendera paczkę przepuszcza (sprawdzane przed każdym wydaniem na paczce oznaczonej jak pobrana z internetu).
+
+**„Włącza się na chwilę i znika, ikonki nie ma”** — to nie SmartScreen, tylko Inteligentna kontrola aplikacji (włączona na
+wielu nowych komputerach z Windows 11): wpuszcza `LinearFrame.exe`, blokuje niepodpisany `LinearFrame.dll` (kod 0x800711C7,
+„Zasady kontroli aplikacji zablokowały ten plik”). Microsoft nie przewiduje wyjątku dla jednej aplikacji — właściciel
+komputera może tylko wyłączyć tę ochronę w całości (Zabezpieczenia Windows → Kontrola aplikacji i przeglądarki) albo
+poczekać na podpisaną wersję. Z 259 plików programu w paczce podpisu nie mają tylko cztery: `LinearFrame.exe`,
+`LinearFrame.dll`, `engine\ffmpeg.exe`, `engine\libmpv-2.dll` (reszta to .NET i biblioteki Microsoftu).
+
+Samo to okno nie zniknie „z czasem”: dla pliku bez podpisu Microsoft liczy uruchomienia od zera przy każdej wersji, a płatny
+certyfikat też zaczyna od zera i potrzebuje setek instalacji. Okno zdejmują tylko dwie darmowe drogi:
+[SignPath Foundation](https://signpath.org/terms) (darmowy podpis dla open source ich certyfikatem; wymaga zgłoszenia,
+budowania wydań przez GitHub Actions i „weryfikowalnej reputacji” projektu) albo wydanie w Microsoft Store (paczka MSIX,
+podpisuje Microsoft; darmowe konto dewelopera).
 
 ## Przydatne komendy
 
